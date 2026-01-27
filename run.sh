@@ -82,6 +82,19 @@ if ! "$PYTHON_EXEC" -c "import ensurepip" &> /dev/null; then
 fi
 
 # 3. Launch Main Script
+
+# Pre-flight check for venv integrity (if it exists)
+VENV_DIR="$WORK_DIR/venv"
+if [ -d "$VENV_DIR" ]; then
+    # Check for mapproxy-seed in standard Linux venv path
+    SEED_BIN="$VENV_DIR/bin/mapproxy-seed"
+    if [ ! -f "$SEED_BIN" ]; then
+        log_warn "Virtual environment exists but '$SEED_BIN' is missing."
+        log_warn "This may indicate a broken installation or missing dependencies."
+        log_warn "The main script will attempt to reinstall dependencies."
+    fi
+fi
+
 log_info "Launching MapProxy Server..."
 log_info "Work Dir: $WORK_DIR"
 log_info "Port: $PORT"

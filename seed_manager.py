@@ -24,11 +24,22 @@ class SeedManager:
         self.seed_conf = os.path.join(project_root, 'mapproxy-seed.yaml')
         self.status_file = os.path.join(project_root, 'seed_status.json')
         
-        # Windows venv 路径
-        self.seed_cmd = os.path.join(project_root, "venv", "Scripts", "mapproxy-seed.exe")
-        if not os.path.exists(self.seed_cmd):
-            # Fallback for non-Windows or different layout
+        # 探测 mapproxy-seed 路径
+        # 1. Windows venv
+        win_path = os.path.join(project_root, "venv", "Scripts", "mapproxy-seed.exe")
+        # 2. Linux/Unix venv
+        unix_path = os.path.join(project_root, "venv", "bin", "mapproxy-seed")
+        
+        if os.path.exists(win_path):
+            self.seed_cmd = win_path
+            logger.info(f"Using mapproxy-seed at: {self.seed_cmd}")
+        elif os.path.exists(unix_path):
+            self.seed_cmd = unix_path
+            logger.info(f"Using mapproxy-seed at: {self.seed_cmd}")
+        else:
+            # Fallback: 假设在 PATH 中
             self.seed_cmd = "mapproxy-seed"
+            logger.warning(f"mapproxy-seed not found in venv, assuming it is in PATH.")
 
     def load_status(self):
         if os.path.exists(self.status_file):
@@ -88,6 +99,15 @@ class SeedManager:
             # 使用 Popen 以便实时获取输出或后台运行
             logger.info(f"执行命令: {' '.join(cmd)}")
             
+            # 验证可执行文件是否存在
+            executable = cmd[0]
+            if not os.path.isabs(executable):
+                import shutil
+                if shutil.which(executable) is None:
+                     raise FileNotFoundError(f"命令 '{executable}' 未在系统路径中找到。请检查依赖是否安装。")
+            elif not os.path.exists(executable):
+                 raise FileNotFoundError(f"可执行文件不存在: {executable}")
+
             # 这里我们同步运行，因为是在后台线程中调用的
             process = subprocess.run(cmd, capture_output=True, text=True)
             
