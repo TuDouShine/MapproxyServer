@@ -1,23 +1,38 @@
 #!/bin/bash
+set -euo pipefail
 
 # MapProxy Server Linux Start Script
-# usage: ./run.sh [port]
+# Usage: ./run.sh [port]
 
-PORT=${1:-8080}
-WORK_DIR=$(dirname "$(readlink -f "$0")")
+# Resolve script directory correctly, handling symlinks
+get_script_dir() {
+  local source="${BASH_SOURCE[0]}"
+  while [ -h "$source" ]; do
+    local dir="$( cd -P "$( dirname "$source" )" && pwd )"
+    source="$(readlink "$source")"
+    [[ $source != /* ]] && source="$dir/$source"
+  done
+  echo "$( cd -P "$( dirname "$source" )" && pwd )"
+}
+
+WORK_DIR="$(get_script_dir)"
+PORT="${1:-8080}"
+
+# Navigate to work directory
 cd "$WORK_DIR"
 
-# Colors
+# Colors for logging
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# Logging functions
 log_info() {
     echo -e "${GREEN}[INFO] $1${NC}"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR] $1${NC}"
+    echo -e "${RED}[ERROR] $1${NC}" >&2
 }
 
 # 1. Environment Check
@@ -36,6 +51,9 @@ if ! python3 -m venv --help &> /dev/null; then
 fi
 
 # 2. Launch Main Script
-# main.py handles venv creation, dependency installation, and service startup
 log_info "Launching MapProxy Server..."
+log_info "Work Dir: $WORK_DIR"
+log_info "Port: $PORT"
+
+# Use exec to replace the shell process with python
 exec python3 main.py --service --port "$PORT" --work-dir "$WORK_DIR"
