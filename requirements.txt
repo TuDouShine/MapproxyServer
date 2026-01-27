@@ -1,0 +1,5 @@
+MapProxy>=1.15.1
+Waitress>=2.1.2
+Pillow
+PyYAML
+psutil>=5.9.0
