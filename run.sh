@@ -63,7 +63,7 @@ fi
 log_info "Checking virtual environment support..."
 
 # Check for ensurepip module (reliable check for venv support on Debian/Ubuntu)
-if ! "$PYTHON_EXEC" -c "import ensurepip" &> /dev/null; then
+if ! "$PYTHON_EXEC" -c "import ensurepip" > /dev/null 2>&1; then
     log_error "The 'ensurepip' module is missing. This prevents creating a virtual environment."
     log_error "Root cause: The 'python3-venv' package is likely not installed."
     

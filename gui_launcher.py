@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import sys
 import os
 import json
@@ -10,10 +10,15 @@ import socket
 import shutil
 import webbrowser
 import yaml
+import time
 try:
     import process_manager
 except ImportError:
     process_manager = None
+try:
+    from seed_manager import SeedManager
+except ImportError:
+    SeedManager = None
 from python_detector import find_python_interpreters
 
 # 工作目录名称
@@ -51,6 +56,7 @@ def deploy_resources():
         "main.py",
         "config.py",
         "seed_manager.py",
+        "utils.py",
         "mapproxy.yaml",
         "mapproxy-seed.yaml",
         "requirements.txt"
@@ -90,6 +96,7 @@ class LauncherApp:
         # 变量
         self.python_path_var = tk.StringVar()
         self.port_var = tk.StringVar(value="8080")
+        self.allow_external_var = tk.BooleanVar(value=False)
         self.service_process = None
         self.log_queue = queue.Queue()
         
@@ -262,7 +269,9 @@ class LauncherApp:
             cmd = [python_path, script_path, '--service', '--python-path', python_path]
 
         # 添加通用参数
-        cmd.extend(['--port', str(port), '--work-dir', work_dir])
+        # Host Logic
+        host = '0.0.0.0' if self.allow_external_var.get() else '127.0.0.1'
+        cmd.extend(['--port', str(port), '--work-dir', work_dir, '--host', host])
         
         self.log(f"正在启动服务: {' '.join(cmd)}")
         self.set_status("正在初始化环境配置...", "orange") # 状态更新
@@ -412,7 +421,59 @@ class LauncherApp:
             self.root.destroy()
 
     def show_advanced(self):
-        messagebox.showinfo("提示", "高级设置功能开发中...")
+        """显示高级设置窗口"""
+        win = tk.Toplevel(self.root)
+        win.title("高级设置")
+        win.geometry("400x350")
+        
+        # 变量绑定
+        concurrency_var = tk.StringVar(value=str(self.config.get('concurrency', 2)))
+        log_level_var = tk.StringVar(value=self.config.get('log_level', 'INFO'))
+        seed_timeout_var = tk.StringVar(value=str(self.config.get('seed_timeout', 3600)))
+        seed_retries_var = tk.StringVar(value=str(self.config.get('seed_retries', 3)))
+        
+        def save_advanced():
+            try:
+                self.config.update({
+                    'concurrency': int(concurrency_var.get()),
+                    'log_level': log_level_var.get(),
+                    'seed_timeout': int(seed_timeout_var.get()),
+                    'seed_retries': int(seed_retries_var.get())
+                })
+                # Save to file
+                with open(get_config_file(), 'w') as f:
+                    json.dump(self.config, f, indent=4)
+                messagebox.showinfo("成功", "设置已保存，部分配置需重启服务生效。")
+                
+                # Update runtime objects if possible
+                if self.seed_manager:
+                    self.seed_manager.max_concurrency = int(concurrency_var.get())
+                    self.seed_manager.max_retries = int(seed_retries_var.get())
+                    
+                win.destroy()
+            except ValueError:
+                messagebox.showerror("错误", "请输入有效的数字")
+        
+        frame = ttk.Frame(win, padding=20)
+        frame.pack(fill="both", expand=True)
+        
+        # Concurrency
+        ttk.Label(frame, text="种子任务并发数:").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Entry(frame, textvariable=concurrency_var).grid(row=0, column=1, sticky="e", pady=5)
+        
+        # Log Level
+        ttk.Label(frame, text="日志级别:").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Combobox(frame, textvariable=log_level_var, values=["DEBUG", "INFO", "WARNING", "ERROR"]).grid(row=1, column=1, sticky="e", pady=5)
+        
+        # Seed Timeout
+        ttk.Label(frame, text="种子超时 (秒):").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Entry(frame, textvariable=seed_timeout_var).grid(row=2, column=1, sticky="e", pady=5)
+        
+        # Seed Retries
+        ttk.Label(frame, text="种子重试次数:").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Entry(frame, textvariable=seed_retries_var).grid(row=3, column=1, sticky="e", pady=5)
+        
+        ttk.Button(frame, text="保存", command=save_advanced).grid(row=5, column=0, columnspan=2, pady=20)
 
     def copy_url(self):
         url = self.service_url_var.get()
@@ -589,6 +650,9 @@ class LauncherApp:
         self.entry_port.grid(row=0, column=1, padx=5, pady=5, sticky="w")
         self.entry_port.bind('<KeyRelease>', self.validate_port_input)
         ttk.Label(frame_port, text="(范围: 1-65535)").grid(row=0, column=2, padx=5, pady=5, sticky="w")
+        
+        # 外部访问
+        ttk.Checkbutton(frame_port, text="允许外部访问 (0.0.0.0)", variable=self.allow_external_var).grid(row=0, column=3, padx=10, pady=5, sticky="w")
 
         # 3. 图层信息区域 (新增)
         self.create_layer_info_widgets()

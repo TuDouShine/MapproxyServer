@@ -18,6 +18,8 @@ datas = [
     ('python_detector.py', '.'),
     ('config.py', '.'),
     ('seed_manager.py', '.'),
+    ('process_manager.py', '.'),
+    ('utils.py', '.'),
     ('mapproxy.yaml', '.'),
     ('mapproxy-seed.yaml', '.'),
     ('requirements.txt', '.'),

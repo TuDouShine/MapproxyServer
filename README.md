@@ -159,7 +159,7 @@ python main.py
 
 *   **Q: 提示 `ModuleNotFoundError: No module named 'venv'`？**
     *   **原因**：部分 Linux 发行版（如 Ubuntu）默认精简了 venv 模块。
-    *   **解决**：需联系运维人员安装 `python3-venv`。
+    *   **解决**：需联系运维人员安装 `python3-venv`，（目前已自动检测处理，根据提示操作安装即可）
 
 ---
 

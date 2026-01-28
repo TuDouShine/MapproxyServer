@@ -11,33 +11,46 @@ REQUIREMENTS_CONTENT = """MapProxy>=1.15.1
 Waitress>=2.1.2
 Pillow
 PyYAML
+psutil>=5.9.0
 """
 
 MIRROR_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
+# 延迟导入 utils，防止在 work_dir 初始化前导入失败
+utils = None
+
 class MapProxyServer:
     def __init__(self, work_dir=None):
-        # 基础目录：代码和资源文件所在目录
+        self.project_root = os.path.dirname(os.path.abspath(__file__))
         if getattr(sys, 'frozen', False):
-             self.project_root = sys._MEIPASS
-        else:
-             self.project_root = os.path.dirname(os.path.abspath(__file__))
-        
-        # 工作目录：数据和运行时配置目录
-        if work_dir:
-            self.work_dir = os.path.abspath(work_dir)
-        else:
-            self.work_dir = self.project_root
+            # 打包环境下，project_root 是临时解压目录
+            pass
             
-        # 确保工作目录存在
-        os.makedirs(self.work_dir, exist_ok=True)
-        
-        # 定义路径 (全部基于 work_dir)
+        # 确定工作目录
+        if work_dir:
+            self.work_dir = work_dir
+        elif getattr(sys, 'frozen', False):
+            # Frozen GUI 模式：默认在 exe 同级目录下的 MapProxyLauncher
+            exe_dir = os.path.dirname(sys.executable)
+            self.work_dir = os.path.join(exe_dir, "MapProxyLauncher")
+        else:
+            # 源码模式：默认在当前目录
+            self.work_dir = self.project_root
+
+        # 路径定义
         self.venv_dir = os.path.join(self.work_dir, "venv")
         self.packages_dir = os.path.join(self.work_dir, "packages")
-        self.req_file = os.path.join(self.work_dir, "requirements.txt")
         self.cache_dir = os.path.join(self.work_dir, "cache_data")
         self.logs_dir = os.path.join(self.work_dir, "logs")
+        self.req_file = os.path.join(self.work_dir, "requirements.txt")
+        
+        # 初始化日志 (集中式)
+        if utils:
+            try:
+                utils.setup_logging(self.logs_dir)
+            except AttributeError:
+                # 可能导入了错误的 utils 模块 (例如 site-packages 中的同名模块)
+                print("Warning: 'utils' module has no 'setup_logging'.")
         
         # Windows 特定路径
         if os.name == 'nt':
@@ -79,7 +92,7 @@ class MapProxyServer:
         
         # 确保 config.py, mapproxy.yaml 等在工作目录
         # (如果在 GUI 模式下已经 deploy 过，这里是双重保险；如果直接运行 main.py，这里是必须的)
-        for filename in ["mapproxy.yaml", "mapproxy-seed.yaml", "config.py", "seed_manager.py"]:
+        for filename in ["mapproxy.yaml", "mapproxy-seed.yaml", "config.py", "seed_manager.py", "utils.py"]:
             src = os.path.join(self.project_root, filename)
             dst = os.path.join(self.work_dir, filename)
             if os.path.exists(src) and not os.path.exists(dst):
@@ -88,6 +101,31 @@ class MapProxyServer:
                      print(f"已复制默认配置: {filename}")
                  except:
                      pass
+        
+        # 再次尝试导入 utils并配置日志 (如果之前失败)
+        global utils
+        if not utils:
+            # 确保工作目录在 path 中
+            if self.work_dir not in sys.path:
+                sys.path.insert(0, self.work_dir)
+                
+            try:
+                import utils
+                utils.setup_logging(self.logs_dir)
+                print("Utils module loaded and logging configured.")
+            except ImportError as e:
+                # 尝试从当前目录导入 (如果是在 dist 目录下运行)
+                try:
+                    import importlib.util
+                    spec = importlib.util.spec_from_file_location("utils", os.path.join(self.work_dir, "utils.py"))
+                    if spec and spec.loader:
+                        utils = importlib.util.module_from_spec(spec)
+                        sys.modules["utils"] = utils
+                        spec.loader.exec_module(utils)
+                        utils.setup_logging(self.logs_dir)
+                        print("Utils module loaded from work_dir.")
+                except Exception as ex:
+                    print(f"Warning: Could not import utils: {e}, {ex}")
 
     def get_available_pythons(self):
         """获取系统可用的 Python 版本"""
