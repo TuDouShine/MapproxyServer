@@ -10,6 +10,7 @@ import socket
 import shutil
 import webbrowser
 import yaml
+import logging
 try:
     import process_manager
 except ImportError:
@@ -70,19 +71,20 @@ def deploy_resources():
                 if not os.path.exists(dst):
                     try:
                         shutil.copy2(src, dst)
-                        print(f"Deploying config: {filename}")
+                        logging.info(f"Deploying config: {filename}")
                     except Exception as e:
-                        print(f"Failed to deploy {filename}: {e}")
+                        logging.exception(f"Failed to deploy {filename}")
             else:
                 # 代码文件：始终覆盖，确保版本更新
                 try:
                     shutil.copy2(src, dst)
                     # print(f"Deploying code: {filename}")
                 except Exception as e:
-                    print(f"Failed to deploy {filename}: {e}")
+                    logging.exception(f"Failed to deploy {filename}")
 
 class LauncherApp:
     def __init__(self, root):
+        logging.basicConfig(level=logging.INFO)
         self.root = root
         self.root.title("MapProxy Server Launcher")
         self.root.geometry("700x650")
@@ -90,8 +92,14 @@ class LauncherApp:
         # 变量
         self.python_path_var = tk.StringVar()
         self.port_var = tk.StringVar(value="8080")
+        self.host_var = tk.StringVar(value="127.0.0.1")
+        self.allow_external_var = tk.BooleanVar(value=False)
         self.service_process = None
         self.log_queue = queue.Queue()
+        self.server_log_path = os.path.join(get_work_dir(), "logs", "server.log")
+        self.server_log_pos = 0
+        self.current_host = "127.0.0.1"
+        self.logger = logging.getLogger("Launcher")
         
         # 新增状态变量
         self.status_var = tk.StringVar(value="就绪")
@@ -126,6 +134,12 @@ class LauncherApp:
         self.text_log.insert("end", message + "\n", level)
         self.text_log.see("end")
         self.text_log.config(state="disabled")
+
+    def update_host_from_access(self):
+        if self.allow_external_var.get():
+            self.host_var.set("0.0.0.0")
+        else:
+            self.host_var.set("127.0.0.1")
 
     def scan_pythons(self):
         self.log("正在扫描 Python 解释器...")
@@ -187,9 +201,14 @@ class LauncherApp:
              messagebox.showerror("错误", "选定的 Python 路径不存在")
              return
 
+        self.update_host_from_access()
+        host_value = self.host_var.get().strip()
+
         config = {
             "python_path": python_path,
             "port": int(self.port_var.get()),
+            "host": host_value,
+            "allow_external_access": bool(self.allow_external_var.get()),
             "selection_label": selection # 保存完整标签以便回显
         }
         
@@ -199,7 +218,8 @@ class LauncherApp:
             self.log("配置已保存。")
             messagebox.showinfo("成功", "配置已保存")
         except Exception as e:
-            messagebox.showerror("错误", f"保存配置失败: {e}")
+                logging.exception("保存配置失败")
+                messagebox.showerror("错误", f"保存配置失败: {e}")
 
     def load_config(self):
         config_file = get_config_file()
@@ -209,16 +229,25 @@ class LauncherApp:
                     config = json.load(f)
                     path = config.get("python_path", "")
                     port = config.get("port", 8080)
+                    host_value = config.get("host", "127.0.0.1")
+                    allow_external = config.get("allow_external_access", False)
                     selection_label = config.get("selection_label", "")
                     
                     self.port_var.set(str(port))
+                    self.allow_external_var.set(bool(allow_external))
+                    if self.allow_external_var.get():
+                        self.host_var.set("0.0.0.0")
+                    else:
+                        self.host_var.set("127.0.0.1")
+                    if not self.allow_external_var.get() and host_value not in ("0.0.0.0", "::"):
+                        self.host_var.set(str(host_value))
                     
                     if selection_label:
                         self.python_path_var.set(selection_label)
                     elif path:
                          self.python_path_var.set(path)
             except Exception:
-                pass
+                logging.exception("读取配置失败")
 
     def start_service(self):
         if self.service_process:
@@ -228,6 +257,8 @@ class LauncherApp:
             return
             
         port = int(self.port_var.get())
+        self.update_host_from_access()
+        host_value = self.host_var.get().strip()
         if self.is_port_in_use(port):
              messagebox.showerror("错误", f"端口 {port} 已被占用")
              return
@@ -262,7 +293,8 @@ class LauncherApp:
             cmd = [python_path, script_path, '--service', '--python-path', python_path]
 
         # 添加通用参数
-        cmd.extend(['--port', str(port), '--work-dir', work_dir])
+        cmd.extend(['--port', str(port), '--host', host_value, '--work-dir', work_dir])
+        self.current_host = host_value
         
         self.log(f"正在启动服务: {' '.join(cmd)}")
         self.set_status("正在初始化环境配置...", "orange") # 状态更新
@@ -291,6 +323,7 @@ class LauncherApp:
             self.btn_stop.config(state="normal")
             
         except Exception as e:
+            logging.exception("启动失败")
             self.log(f"启动失败: {e}", "error")
             self.set_status("启动失败", "red")
 
@@ -305,51 +338,63 @@ class LauncherApp:
         self.log_queue.put(None) # 标记结束
 
     def update_logs(self):
-        try:
-            while True:
-                msg = self.log_queue.get_nowait()
-                if msg is None:
-                    self.log("服务已停止。", "error")
-                    self.set_status("服务已停止", "red")
-                    self.service_process = None
-                    self.btn_start.config(state="normal")
-                    self.btn_stop.config(state="disabled")
-                else:
-                    self.log(msg)
-                    # 状态检测逻辑
-                    if "Serving on http://" in msg or "Serving on https://" in msg:
-                        # 提取 URL (Waitress 标准输出)
-                        try:
-                            # 假设格式: Serving on http://0.0.0.0:8080
-                            url_part = msg.split("Serving on ")[1].strip()
-                            if "0.0.0.0" in url_part:
-                                url_part = url_part.replace("0.0.0.0", "127.0.0.1")
-                            self.set_status("运行成功", "green", url_part)
-                        except:
+        while not self.log_queue.empty():
+            msg = self.log_queue.get_nowait()
+            if msg is None:
+                self.log("服务已停止。", "error")
+                self.set_status("服务已停止", "red")
+                self.service_process = None
+                self.btn_start.config(state="normal")
+                self.btn_stop.config(state="disabled")
+            else:
+                self.log(msg)
+                if self.service_process and ("Serving on http://" in msg or "Serving on https://" in msg):
+                    try:
+                        url_part = msg.split("Serving on ")[1].strip()
+                        if "0.0.0.0" in url_part:
+                            url_part = url_part.replace("0.0.0.0", self.current_host)
+                        self.set_status("运行成功", "green", url_part)
+                    except Exception:
+                        logging.exception("日志解析失败(Serving on)")
+                elif self.service_process and "监听: http://" in msg:
+                    try:
+                        url_part = msg.split("监听: ")[1].strip()
+                        if "0.0.0.0" in url_part:
+                            url_part = url_part.replace("0.0.0.0", self.current_host)
+                        self.set_status("运行成功", "green", url_part)
+                    except Exception:
+                        logging.exception("日志解析失败(监听)")
+                elif self.service_process and "请访问 http://" in msg:
+                    try:
+                        url_part = msg.split("请访问 ")[1].strip()
+                        if "localhost" not in url_part and "127.0.0.1" not in url_part:
                             pass
-                    elif "监听: http://" in msg:
-                        # 提取 URL (main.py 自定义输出)
-                        try:
-                            url_part = msg.split("监听: ")[1].strip()
-                            if "0.0.0.0" in url_part:
-                                url_part = url_part.replace("0.0.0.0", "127.0.0.1")
-                            self.set_status("运行成功", "green", url_part)
-                        except:
-                            pass
-                    elif "请访问 http://" in msg:
-                        # 提取 URL (main.py 自定义输出)
-                        try:
-                            url_part = msg.split("请访问 ")[1].strip()
-                            if "localhost" not in url_part and "127.0.0.1" not in url_part:
-                                # 如果是其他IP，保留，否则不用特殊处理
-                                pass
-                            self.set_status("运行成功", "green", url_part)
-                        except:
-                            pass
-        except queue.Empty:
-            pass
+                        self.set_status("运行成功", "green", url_part)
+                    except Exception:
+                        logging.exception("日志解析失败(请访问)")
+
+        # 停止时不读取 server.log 以避免误判
+        if self.service_process:
+            self.read_server_log()
         
         self.root.after(100, self.update_logs)
+
+    def read_server_log(self):
+        if self.service_process:
+            return
+        if not os.path.exists(self.server_log_path):
+            return
+        try:
+            with open(self.server_log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                f.seek(self.server_log_pos)
+                lines = f.readlines()
+                self.server_log_pos = f.tell()
+            for line in lines:
+                text = line.rstrip()
+                if text:
+                    self.log(text)
+        except Exception:
+            logging.exception("读取 server.log 失败")
 
     def stop_service(self):
         """停止服务，仅终止由当前实例启动的进程"""
@@ -378,11 +423,18 @@ class LauncherApp:
                         self.service_process.kill()
                         self.log(f"进程 {pid} 已强制杀死", "warning")
                 except Exception as e:
+                    logging.exception("停止进程失败")
                     self.log(f"停止进程失败: {e}", "error")
             
             # 清理标识符
             self.service_process = None
             self.set_status("服务已停止", "red")
+            # 防止读取旧日志造成误判
+            try:
+                if os.path.exists(self.server_log_path):
+                    self.server_log_pos = os.path.getsize(self.server_log_path)
+            except Exception:
+                logging.exception("更新日志指针失败")
             
             # 验证端口释放 (仅作为信息提示，不进行强制干预)
             try:
@@ -392,8 +444,8 @@ class LauncherApp:
                 else:
                     # 如果端口未释放，可能是其他进程占用了，或者清理不彻底，但我们不再强杀
                     pass
-            except:
-                pass
+            except Exception:
+                logging.exception("端口释放验证失败")
 
         else:
             self.log("当前没有运行的服务实例。", "warning")
@@ -425,53 +477,65 @@ class LauncherApp:
         url = self.service_url_var.get()
         if url:
             webbrowser.open(url)
-
+            
     def open_work_dir(self):
         work_dir = get_work_dir()
         if os.path.exists(work_dir):
-            if os.name == 'nt':
-                # os.startfile(work_dir) # 替换为 explorer 调用以避免误执行程序
-                subprocess.Popen(['explorer', work_dir])
-            else:
-                subprocess.call(['xdg-open', work_dir])
+            os.startfile(work_dir)
         else:
             messagebox.showerror("错误", "工作目录不存在")
 
     def get_layer_info(self):
         """解析 mapproxy.yaml 获取图层信息"""
-        config_file = os.path.join(get_work_dir(), "mapproxy.yaml")
-        layers_info = []
+        yaml_path = os.path.join(get_work_dir(), "mapproxy.yaml")
+        if not os.path.exists(yaml_path):
+            return []
         
-        if not os.path.exists(config_file):
-            return layers_info
-            
+        layers_info = []
         try:
-            with open(config_file, 'r', encoding='utf-8') as f:
+            with open(yaml_path, 'r', encoding='utf-8') as f:
                 conf = yaml.safe_load(f)
                 
-            caches = conf.get('caches', {})
             layers = conf.get('layers', [])
+            caches = conf.get('caches', {})
             
             for layer in layers:
-                name = layer.get('name', 'Unknown')
+                name = layer.get('name')
                 title = layer.get('title', name)
                 sources = layer.get('sources', [])
                 
+                # 尝试查找缓存格式
                 fmt = "Unknown"
                 if sources:
-                    # 假设第一个 source 是 cache
-                    source_name = sources[0]
-                    if source_name in caches:
-                        cache_conf = caches[source_name]
-                        fmt = cache_conf.get('format', 'Unknown')
+                    cache_name = sources[0] # 假设第一个 source 是 cache
+                    if cache_name in caches:
+                        cache_conf = caches[cache_name]
+                        # 查找 format
+                        # 通常在 cache -> grids (implicit) -> format? 
+                        # 或者 cache -> cache (file) -> ...
+                        # 简化：查看 cache 的 source 的 format? 不对，cache 是输出
+                        # 查找 cache 的 image options?
+                        # 简单起见，查看 cache 定义是否有 image format
+                        # 实际上 MapProxy 默认 png 或 jpeg
                         
+                        # 尝试从 grids 猜测? 不太准
+                        # 尝试直接读取 cache 配置中的 request_format 或 format
+                        fmt = cache_conf.get('request_format') or cache_conf.get('format')
+                        
+                        if not fmt:
+                            # 再次深入：如果 cache 的 source 是 demo_source
+                            pass
+                        
+                        if not fmt:
+                            fmt = "image/png (Default)"
+
                 layers_info.append({
                     'name': name,
                     'title': title,
                     'format': fmt
                 })
         except Exception as e:
-            print(f"Error parsing config: {e}")
+            logging.exception("解析 mapproxy.yaml 失败")
             
         return layers_info
 
@@ -589,6 +653,13 @@ class LauncherApp:
         self.entry_port.grid(row=0, column=1, padx=5, pady=5, sticky="w")
         self.entry_port.bind('<KeyRelease>', self.validate_port_input)
         ttk.Label(frame_port, text="(范围: 1-65535)").grid(row=0, column=2, padx=5, pady=5, sticky="w")
+
+        ttk.Label(frame_port, text="绑定 Host:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.entry_host = ttk.Entry(frame_port, textvariable=self.host_var, width=20, state="readonly")
+        self.entry_host.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        ttk.Label(frame_port, text="(勾选外部访问后将自动绑定 0.0.0.0)").grid(row=1, column=2, padx=5, pady=5, sticky="w")
+        chk = ttk.Checkbutton(frame_port, text="允许外部访问（绑定到所有网卡）", variable=self.allow_external_var, command=self.update_host_from_access)
+        chk.grid(row=2, column=0, columnspan=3, padx=5, pady=5, sticky="w")
 
         # 3. 图层信息区域 (新增)
         self.create_layer_info_widgets()

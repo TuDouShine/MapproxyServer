@@ -3,6 +3,10 @@ import sys
 import subprocess
 import shutil
 import platform
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def check_requirements():
     """检查构建环境"""
@@ -13,8 +17,8 @@ def check_requirements():
         import PyInstaller
         print(f"  - PyInstaller: Found ({PyInstaller.__version__})")
     except ImportError:
-        print("  - PyInstaller: NOT FOUND")
-        print("    Please install it: pip install pyinstaller")
+        logger.exception("PyInstaller 未安装")
+        logger.info("请安装: pip install pyinstaller")
         return False
         
     # 检查 Tkinter (Linux 需要 python3-tk)
@@ -22,9 +26,9 @@ def check_requirements():
         import tkinter
         print(f"  - Tkinter: Found ({tkinter.TkVersion})")
     except ImportError:
-        print("  - Tkinter: NOT FOUND")
+        logger.exception("Tkinter 未安装")
         if platform.system() == "Linux":
-            print("    On Linux, you may need: sudo apt-get install python3-tk")
+            logger.info("在 Linux 上可能需要: sudo apt-get install python3-tk")
         return False
         
     return True
@@ -69,8 +73,8 @@ def build():
         else:
             print(f"Error: Expected artifact not found at {exe_path}")
             
-    except subprocess.CalledProcessError as e:
-        print(f"\nBuild failed with exit code {e.returncode}")
+    except subprocess.CalledProcessError:
+        logger.exception("构建失败")
         sys.exit(1)
 
 if __name__ == "__main__":

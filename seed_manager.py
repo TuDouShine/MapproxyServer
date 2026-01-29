@@ -4,6 +4,7 @@ import threading
 import time
 import json
 import logging
+import hashlib
 from datetime import datetime
 
 # 配置日志
@@ -23,6 +24,8 @@ class SeedManager:
         self.mapproxy_conf = os.path.join(project_root, 'mapproxy.yaml')
         self.seed_conf = os.path.join(project_root, 'mapproxy-seed.yaml')
         self.status_file = os.path.join(project_root, 'seed_status.json')
+        self.seed_concurrency = self._get_seed_concurrency()
+        self.seed_max_retries, self.seed_retry_backoff = self._get_seed_retry_config()
         
         # 探测 mapproxy-seed 路径
         # 1. Windows venv
@@ -41,18 +44,73 @@ class SeedManager:
             self.seed_cmd = "mapproxy-seed"
             logger.warning(f"mapproxy-seed not found in venv, assuming it is in PATH.")
 
+    def _get_seed_concurrency(self):
+        raw_value = os.environ.get("MAPPROXY_SEED_CONCURRENCY", "").strip()
+        if not raw_value:
+            return 2
+        try:
+            value = int(raw_value)
+        except ValueError:
+            logger.warning(f"Invalid MAPPROXY_SEED_CONCURRENCY: {raw_value}, using default 2")
+            return 2
+        if value < 1 or value > 16:
+            logger.warning(f"MAPPROXY_SEED_CONCURRENCY out of range: {value}, using default 2")
+            return 2
+        return value
+
+    def _compute_seed_hash(self):
+        if not os.path.exists(self.mapproxy_conf) or not os.path.exists(self.seed_conf):
+            return None
+        try:
+            hasher = hashlib.sha256()
+            for path in [self.mapproxy_conf, self.seed_conf]:
+                with open(path, 'rb') as f:
+                    for chunk in iter(lambda: f.read(8192), b''):
+                        hasher.update(chunk)
+                hasher.update(b'|')
+            return hasher.hexdigest()
+        except Exception:
+            logger.exception("Failed to compute seed hash")
+            return None
+
+    def _get_seed_retry_config(self):
+        raw_retries = os.environ.get("MAPPROXY_SEED_MAX_RETRIES", "").strip()
+        raw_backoff = os.environ.get("MAPPROXY_SEED_RETRY_BACKOFF", "").strip()
+        max_retries = 2
+        backoff = 5
+        if raw_retries:
+            try:
+                max_retries = int(raw_retries)
+            except ValueError:
+                logger.warning(f"Invalid MAPPROXY_SEED_MAX_RETRIES: {raw_retries}, using default 2")
+                max_retries = 2
+        if raw_backoff:
+            try:
+                backoff = int(raw_backoff)
+            except ValueError:
+                logger.warning(f"Invalid MAPPROXY_SEED_RETRY_BACKOFF: {raw_backoff}, using default 5")
+                backoff = 5
+        if max_retries < 0:
+            max_retries = 0
+        if backoff < 0:
+            backoff = 0
+        return max_retries, backoff
+
     def load_status(self):
         if os.path.exists(self.status_file):
             try:
                 with open(self.status_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
-                pass
+            except Exception:
+                logger.exception("Failed to load status file")
         return {}
 
     def save_status(self, status):
-        with open(self.status_file, 'w', encoding='utf-8') as f:
-            json.dump(status, f, indent=2, ensure_ascii=False)
+        try:
+            with open(self.status_file, 'w', encoding='utf-8') as f:
+                json.dump(status, f, indent=2, ensure_ascii=False)
+        except Exception:
+            logger.exception("Failed to save status file")
 
     def is_seeded(self):
         """
@@ -61,8 +119,14 @@ class SeedManager:
         """
         status = self.load_status()
         last_success = status.get('last_success')
-        
+        current_hash = self._compute_seed_hash()
+
         if not last_success:
+            return False
+        if not current_hash:
+            return False
+        if status.get('seed_hash') != current_hash:
+            logger.info("Seed 配置已变更，需重新执行。")
             return False
         
         # 这里可以加入更复杂的逻辑，比如检查配置文件是否修改
@@ -81,6 +145,7 @@ class SeedManager:
         self.save_status(status)
 
         try:
+            current_hash = self._compute_seed_hash()
             # 构造命令
             # --concurrency 2: 控制并发
             # --quiet: 减少输出
@@ -92,7 +157,7 @@ class SeedManager:
                 self.seed_cmd,
                 '-f', self.mapproxy_conf,
                 '-s', self.seed_conf,
-                '--concurrency', '2',
+                '--concurrency', str(self.seed_concurrency),
                 '--quiet'
             ]
             
@@ -108,23 +173,30 @@ class SeedManager:
             elif not os.path.exists(executable):
                  raise FileNotFoundError(f"可执行文件不存在: {executable}")
 
-            # 这里我们同步运行，因为是在后台线程中调用的
-            process = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if process.returncode == 0:
-                logger.info("Seed 任务完成。")
-                status['last_success'] = datetime.now().isoformat()
-                status['status'] = 'completed'
-                status['message'] = "All tasks finished successfully."
-            else:
+            attempt = 0
+            while True:
+                process = subprocess.run(cmd, capture_output=True, text=True)
+                if process.returncode == 0:
+                    logger.info("Seed 任务完成。")
+                    status['last_success'] = datetime.now().isoformat()
+                    status['status'] = 'completed'
+                    status['message'] = "All tasks finished successfully."
+                    if current_hash:
+                        status['seed_hash'] = current_hash
+                    break
                 logger.error(f"Seed 任务失败: {process.stderr}")
                 status['status'] = 'failed'
                 status['error'] = process.stderr
+                if attempt >= self.seed_max_retries:
+                    break
+                attempt += 1
+                if self.seed_retry_backoff > 0:
+                    time.sleep(self.seed_retry_backoff)
                 
-        except Exception as e:
-            logger.error(f"Seed 执行异常: {e}")
+        except Exception:
+            logger.exception("Seed 执行异常")
             status['status'] = 'error'
-            status['error'] = str(e)
+            status['error'] = "Seed 执行异常"
         finally:
             status['last_run_end'] = datetime.now().isoformat()
             self.save_status(status)

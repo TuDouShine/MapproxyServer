@@ -12,7 +12,7 @@ WorkingDirectory=/opt/MapproxyServer
 
 # Use the system python to launch the main script
 # The script handles virtualenv creation and usage internally
-ExecStart=/usr/bin/python3 /opt/MapproxyServer/main.py --service --port 8080 --work-dir /opt/MapproxyServer
+ExecStart=/usr/bin/python3 /opt/MapproxyServer/main.py --service --port 8080 --host 0.0.0.0 --work-dir /opt/MapproxyServer
 
 # Restart configuration
 Restart=always

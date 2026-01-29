@@ -2,6 +2,9 @@ import os
 import sys
 import subprocess
 import glob
+import logging
+
+logger = logging.getLogger(__name__)
 
 def get_python_version(path):
     """获取指定 Python 解释器的版本信息"""
@@ -11,7 +14,7 @@ def get_python_version(path):
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception:
-        pass
+        logger.exception("获取 Python 版本失败")
     return None
 
 def find_python_interpreters():

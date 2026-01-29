@@ -4,17 +4,18 @@ import time
 import logging
 import signal
 import os
+from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
-def is_port_in_use(port):
+def is_port_in_use(port: int) -> bool:
     """
     检查端口是否被占用
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('127.0.0.1', port)) == 0
 
-def kill_process_tree(pid, timeout=3):
+def kill_process_tree(pid: int, timeout: int = 3) -> Tuple[bool, str]:
     """
     终止指定 PID 及其所有子进程。
     
@@ -68,11 +69,13 @@ def kill_process_tree(pid, timeout=3):
         return True, f"已终止进程 {proc_name} (PID: {pid}) 及其子进程"
         
     except psutil.NoSuchProcess:
+        logger.exception(f"进程 {pid} 已不存在")
         return True, f"进程 {pid} 已不存在"
-    except Exception as e:
-        return False, f"终止进程 {pid} 失败: {str(e)}"
+    except Exception:
+        logger.exception(f"终止进程 {pid} 失败")
+        return False, f"终止进程 {pid} 失败"
 
-def verify_port_release(port, timeout=3):
+def verify_port_release(port: int, timeout: int = 3) -> bool:
     """
     验证端口是否已释放
     """
