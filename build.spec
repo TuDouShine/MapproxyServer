@@ -21,6 +21,12 @@ datas = [
     ('mapproxy.yaml', '.'),
     ('mapproxy-seed.yaml', '.'),
     ('requirements.txt', '.'),
+    ('utils.py', '.'),
+    ('env_manager.py', '.'),
+    ('dependency_manager.py', '.'),
+    ('service_runner.py', '.'),
+    ('seed_orchestrator.py', '.'),
+    ('config_manager.py', '.'),
     # 显式包含 MapProxy 的配置文件和模板
     (os.path.join(mapproxy_path, 'config', 'config-schema.json'), os.path.join('mapproxy', 'config')),
     (os.path.join(mapproxy_path, 'service', 'templates'), os.path.join('mapproxy', 'service', 'templates')),

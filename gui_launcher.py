@@ -2,39 +2,27 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import sys
 import os
-import json
 import subprocess
 import threading
 import queue
-import socket
 import shutil
 import webbrowser
-import yaml
 import logging
+import json # Used for error handling/logging if needed, though ConfigManager handles file IO
+try:
+    import main
+except ImportError:
+    main = None # Should not happen in bundle, but safe for dev
 try:
     import process_manager
 except ImportError:
     process_manager = None
 from python_detector import find_python_interpreters
+from utils import get_base_dir, get_work_dir, is_port_in_use
+from config_manager import ConfigManager
 
-# 工作目录名称
+# 工作目录名称 (referenced from utils implicitly by get_work_dir, but we might need it for display or logic)
 LAUNCHER_DIR_NAME = "MapProxyLauncher"
-
-def get_base_dir():
-    """获取程序所在的基准目录"""
-    if getattr(sys, 'frozen', False):
-        # 如果是打包后的 exe，基准目录是 exe 所在目录
-        return os.path.dirname(sys.executable)
-    else:
-        # 如果是脚本运行，基准目录是脚本所在目录
-        return os.path.dirname(os.path.abspath(__file__))
-
-def get_work_dir():
-    """获取工作目录（数据存储目录）"""
-    return os.path.join(get_base_dir(), LAUNCHER_DIR_NAME)
-
-def get_config_file():
-    return os.path.join(get_work_dir(), "config.json")
 
 def deploy_resources():
     """将内嵌资源部署到工作目录"""
@@ -48,26 +36,33 @@ def deploy_resources():
         source_dir = os.path.dirname(os.path.abspath(__file__))
     
     # 需要复制的文件列表
+    # 注意：ConfigManager 会处理配置文件的初始化，但这里我们还需要处理代码文件
+    # 为了避免冲突，我们可以让 ConfigManager 处理配置，这里只处理代码
+    # 或者为了简单，保留这里的逻辑，但确保一致性
     files_to_copy = [
         "main.py",
         "config.py",
         "seed_manager.py",
         "mapproxy.yaml",
         "mapproxy-seed.yaml",
-        "requirements.txt"
+        "requirements.txt",
+        "utils.py",
+        "env_manager.py",
+        "dependency_manager.py",
+        "service_runner.py",
+        "seed_orchestrator.py",
+        "config_manager.py",
+        "python_detector.py" # Ensure all modules are deployed
     ]
     
     for filename in files_to_copy:
         src = os.path.join(source_dir, filename)
         dst = os.path.join(work_dir, filename)
         
-        # 如果源文件存在且目标文件不存在（或者强制覆盖逻辑），则复制
-        # 这里为了简单，且为了支持升级，如果源文件存在，我们检查目标是否存在
-        # 配置文件如果用户改过，最好不要覆盖。但是代码文件必须覆盖。
-        
         if os.path.exists(src):
-            if filename.endswith(".yaml") or filename.endswith(".json") or filename == "requirements.txt":
+            if filename.endswith(".yaml") or filename.endswith(".json") or filename == "requirements.txt" or filename == "config.py":
                 # 配置文件/数据文件：仅当不存在时复制，以免覆盖用户配置
+                # config.py 虽然是代码，但也包含用户可能修改的配置 (application entry)，所以小心覆盖
                 if not os.path.exists(dst):
                     try:
                         shutil.copy2(src, dst)
@@ -78,7 +73,6 @@ def deploy_resources():
                 # 代码文件：始终覆盖，确保版本更新
                 try:
                     shutil.copy2(src, dst)
-                    # print(f"Deploying code: {filename}")
                 except Exception as e:
                     logging.exception(f"Failed to deploy {filename}")
 
@@ -87,7 +81,7 @@ class LauncherApp:
         logging.basicConfig(level=logging.INFO)
         self.root = root
         self.root.title("MapProxy Server Launcher")
-        self.root.geometry("700x650")
+        self.root.geometry("850x800")
         
         # 变量
         self.python_path_var = tk.StringVar()
@@ -101,6 +95,9 @@ class LauncherApp:
         self.current_host = "127.0.0.1"
         self.logger = logging.getLogger("Launcher")
         
+        # Config Manager
+        self.config_mgr = ConfigManager(get_work_dir(), get_base_dir())
+        
         # 新增状态变量
         self.status_var = tk.StringVar(value="就绪")
         self.service_url_var = tk.StringVar(value="")
@@ -111,23 +108,136 @@ class LauncherApp:
 
         # 配置样式
         style = ttk.Style()
-        # 移除只读 Combobox 选中时的蓝色背景
-        # 尝试覆盖所有可能的状态组合，特别是 focus 和 background 属性
+        # 修复 Combobox 在 Windows 下的样式问题：
+        # 移除 selectbackground 的强制设置，避免与系统主题冲突导致"蓝白"混合显示
+        # 仅确保 readonly 状态下的基础背景为白色，选中时不改变背景色(看起来像普通输入框)
         style.map('TCombobox', 
-                  fieldbackground=[('readonly', 'focus', 'white'), ('readonly', 'white')],
-                  selectbackground=[('readonly', 'focus', 'white'), ('readonly', 'white')],
-                  selectforeground=[('readonly', 'focus', 'black'), ('readonly', 'black')],
-                  background=[('readonly', 'focus', 'white'), ('readonly', 'white')])
+                  fieldbackground=[('readonly', 'white'), ('!disabled', 'white')],
+                  background=[('readonly', 'white'), ('!disabled', 'white')],
+                  selectbackground=[('readonly', 'white'), ('!disabled', 'white')],
+                  selectforeground=[('readonly', 'black'), ('!disabled', 'black')])
         
         self.create_widgets()
         self.load_config()
         self.scan_pythons()
+        self.load_layers()
         
         # 启动日志更新定时器
         self.root.after(100, self.update_logs)
         
         # 绑定关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def create_widgets(self):
+        # ... (Same as before, I will rely on previous content or assume I don't need to rewrite this method if I use SearchReplace, 
+        # but since I am rewriting the file, I must include it.
+        # To save space and time, I will include the full method content from the previous read.)
+        
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 1. Python 环境选择
+        frame_env = ttk.LabelFrame(main_frame, text="运行环境", padding="5")
+        frame_env.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(frame_env, text="Python 解释器:").pack(side=tk.LEFT)
+        self.combo_python = ttk.Combobox(frame_env, textvariable=self.python_path_var, state="readonly", width=50)
+        self.combo_python.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        ttk.Button(frame_env, text="刷新", command=self.scan_pythons).pack(side=tk.LEFT)
+
+        # 2. 服务配置
+        frame_config = ttk.LabelFrame(main_frame, text="服务配置", padding="5")
+        frame_config.pack(fill=tk.X, pady=5)
+        
+        # Grid 布局
+        ttk.Label(frame_config, text="端口 (Port):").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.entry_port = ttk.Entry(frame_config, textvariable=self.port_var, width=10)
+        self.entry_port.grid(row=0, column=1, sticky=tk.W, pady=5)
+        self.entry_port.bind('<KeyRelease>', self.validate_port_input)
+        
+        ttk.Label(frame_config, text="允许外部访问:").grid(row=0, column=2, sticky=tk.W, padx=10, pady=5)
+        self.chk_external = ttk.Checkbutton(frame_config, variable=self.allow_external_var, command=self.update_host_from_access)
+        self.chk_external.grid(row=0, column=3, sticky=tk.W, pady=5)
+        
+        ttk.Label(frame_config, text="监听地址 (Host):").grid(row=0, column=4, sticky=tk.W, padx=10, pady=5)
+        self.lbl_host = ttk.Label(frame_config, textvariable=self.host_var)
+        self.lbl_host.grid(row=0, column=5, sticky=tk.W, pady=5)
+
+        self.btn_save = ttk.Button(frame_config, text="保存配置", command=self.save_config)
+        self.btn_save.grid(row=0, column=6, sticky=tk.E, padx=20)
+        
+        # 3. 控制面板
+        frame_control = ttk.Frame(main_frame, padding="5")
+        frame_control.pack(fill=tk.X, pady=10)
+        
+        self.btn_start = ttk.Button(frame_control, text="启动服务", command=self.start_service)
+        self.btn_start.pack(side=tk.LEFT, padx=5)
+        
+        self.btn_stop = ttk.Button(frame_control, text="停止服务", command=self.stop_service, state="disabled")
+        self.btn_stop.pack(side=tk.LEFT, padx=5)
+        
+        self.btn_browser = ttk.Button(frame_control, text="在浏览器打开", command=self.open_browser)
+        self.btn_browser.pack(side=tk.LEFT, padx=20)
+
+        self.btn_dir = ttk.Button(frame_control, text="打开工作目录", command=self.open_work_dir)
+        self.btn_dir.pack(side=tk.LEFT, padx=5)
+        
+        # 状态显示
+        frame_status = ttk.Frame(main_frame)
+        frame_status.pack(fill=tk.X, pady=5)
+        ttk.Label(frame_status, text="状态: ").pack(side=tk.LEFT)
+        self.lbl_status = ttk.Label(frame_status, textvariable=self.status_var, foreground="gray")
+        self.lbl_status.pack(side=tk.LEFT)
+        
+        ttk.Label(frame_status, text="  |  访问地址: ").pack(side=tk.LEFT, padx=(10,0))
+        entry_url = ttk.Entry(frame_status, textvariable=self.service_url_var, state="readonly", width=30)
+        entry_url.pack(side=tk.LEFT)
+        ttk.Button(frame_status, text="复制", command=self.copy_url, width=4).pack(side=tk.LEFT, padx=2)
+
+        # 4. 图层信息
+        frame_layers = ttk.LabelFrame(main_frame, text="图层信息 (单击单元格复制内容)", padding="5")
+        frame_layers.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        columns = ("name", "title", "format")
+        self.tree_layers = ttk.Treeview(frame_layers, columns=columns, show="headings", height=6, selectmode="none")
+        
+        self.tree_layers.heading("name", text="图层名称 (Name)")
+        self.tree_layers.heading("title", text="标题 (Title)")
+        self.tree_layers.heading("format", text="格式 (Format)")
+        
+        self.tree_layers.column("name", width=200, anchor=tk.W)
+        self.tree_layers.column("title", width=300, anchor=tk.W)
+        self.tree_layers.column("format", width=100, anchor=tk.CENTER)
+        
+        # 配置 hover tag
+        self.tree_layers.tag_configure("hover", background="#f5f5f5")
+        
+        scrollbar_layers = ttk.Scrollbar(frame_layers, orient=tk.VERTICAL, command=self.tree_layers.yview)
+        self.tree_layers.configure(yscroll=scrollbar_layers.set)
+        
+        self.tree_layers.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar_layers.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.tree_layers.bind("<Button-1>", self.on_layer_click)
+        self.tree_layers.bind("<Motion>", self.on_tree_hover)
+
+        # 5. 日志区域
+        frame_log = ttk.LabelFrame(main_frame, text="运行日志", padding="5")
+        frame_log.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.text_log = scrolledtext.ScrolledText(frame_log, height=15, state="disabled")
+        self.text_log.pack(fill=tk.BOTH, expand=True)
+        
+        # 配置日志 Tag 颜色
+        self.text_log.tag_config("info", foreground="black")
+        self.text_log.tag_config("error", foreground="red")
+        self.text_log.tag_config("warning", foreground="orange")
+        self.text_log.tag_config("success", foreground="green")
+
+    def set_status(self, status, color, url=""):
+        self.status_var.set(status)
+        self.lbl_status.config(foreground=color)
+        self.service_url_var.set(url)
 
     def log(self, message, level="info"):
         self.text_log.config(state="normal")
@@ -163,6 +273,116 @@ class LauncherApp:
             
         self.log(f"扫描完成，找到 {len(interpreters)} 个解释器。")
 
+    def load_layers(self):
+        """加载并显示图层信息"""
+        self.tree_layers.delete(*self.tree_layers.get_children())
+        layers = self.config_mgr.get_layers()
+        if not layers:
+            # Try to insert a placeholder or log
+            self.log("未找到图层信息或配置文件读取失败。")
+            return
+
+        for layer in layers:
+            self.tree_layers.insert("", tk.END, values=(
+                layer.get('name', ''),
+                layer.get('title', ''),
+                layer.get('format', '')
+            ))
+        self.log(f"已加载 {len(layers)} 个图层信息。")
+
+    def on_layer_click(self, event):
+        """单击图层列表复制单元格内容"""
+        region = self.tree_layers.identify("region", event.x, event.y)
+        if region == "cell":
+            column = self.tree_layers.identify_column(event.x)
+            item_id = self.tree_layers.identify_row(event.y)
+            if item_id:
+                # column returns #1, #2, etc. convert to index
+                col_idx = int(column.replace('#', '')) - 1
+                values = self.tree_layers.item(item_id, 'values')
+                if 0 <= col_idx < len(values):
+                    val = values[col_idx]
+                    self.copy_to_clipboard(val)
+
+    def on_tree_hover(self, event):
+        """鼠标悬停效果"""
+        region = self.tree_layers.identify("region", event.x, event.y)
+        if region == "cell":
+            self.tree_layers.configure(cursor="hand2")
+            
+            # 高亮行效果
+            item_id = self.tree_layers.identify_row(event.y)
+            
+            # 清除所有其他行的 hover 状态 (或者只清除上一个)
+            # 这里简单处理，如果行数不多，遍历清除。如果行数多，建议只追踪 last_hover_item
+            # 由于 Treeview tag 系统，我们需要追踪上一个 hover 的项
+            
+            if hasattr(self, '_last_hover_item') and self._last_hover_item and self._last_hover_item != item_id:
+                try:
+                    self.tree_layers.item(self._last_hover_item, tags=())
+                except Exception:
+                    pass # Item might be deleted
+            
+            if item_id:
+                self.tree_layers.item(item_id, tags=("hover",))
+                self._last_hover_item = item_id
+            else:
+                self._last_hover_item = None
+
+        else:
+            self.tree_layers.configure(cursor="")
+            # 移出 cell 区域时清除高亮
+            if hasattr(self, '_last_hover_item') and self._last_hover_item:
+                try:
+                    self.tree_layers.item(self._last_hover_item, tags=())
+                except Exception:
+                    pass
+                self._last_hover_item = None
+
+    def show_toast(self, message):
+        """显示简单的 Toast 消息"""
+        try:
+            toast = tk.Toplevel(self.root)
+            toast.overrideredirect(True)
+            toast.attributes("-topmost", True)
+            
+            # 简单的样式
+            label = tk.Label(toast, text=message, bg="#333333", fg="white", 
+                             padx=15, pady=8, font=("Microsoft YaHei", 9))
+            label.pack()
+            
+            # 居中显示在主窗口下方或中间
+            # 获取主窗口位置和大小
+            root_x = self.root.winfo_rootx()
+            root_y = self.root.winfo_rooty()
+            root_w = self.root.winfo_width()
+            root_h = self.root.winfo_height()
+            
+            # Toast 大小
+            toast.update_idletasks()
+            w = toast.winfo_width()
+            h = toast.winfo_height()
+            
+            x = root_x + (root_w - w) // 2
+            y = root_y + root_h - 100 # 底部偏上
+            
+            toast.geometry(f"+{x}+{y}")
+            
+            # 2秒后销毁
+            toast.after(2000, toast.destroy)
+        except Exception:
+            pass # 忽略 Toast 错误
+
+    def copy_to_clipboard(self, text):
+        if not text:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update() 
+        self.log(f"已复制到剪贴板: {text}")
+        # messagebox.showinfo("复制成功", f"内容已复制:\n{text}") # 替换为 Toast
+        self.show_toast(f"已复制: {text}")
+
     def validate_port_input(self, event=None):
         try:
             port = int(self.port_var.get())
@@ -176,10 +396,6 @@ class LauncherApp:
             self.entry_port.config(foreground="red")
             self.btn_save.config(state="disabled")
             return False
-
-    def is_port_in_use(self, port):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            return s.connect_ex(('127.0.0.1', port)) == 0
 
     def save_config(self):
         if not self.validate_port_input():
@@ -203,8 +419,8 @@ class LauncherApp:
 
         self.update_host_from_access()
         host_value = self.host_var.get().strip()
-
-        config = {
+        
+        config_data = {
             "python_path": python_path,
             "port": int(self.port_var.get()),
             "host": host_value,
@@ -213,41 +429,38 @@ class LauncherApp:
         }
         
         try:
-            with open(get_config_file(), 'w') as f:
-                json.dump(config, f)
+            self.config_mgr.save_launcher_config(config_data)
             self.log("配置已保存。")
-            messagebox.showinfo("成功", "配置已保存")
+            self.show_toast("配置已成功保存")
+            # messagebox.showinfo("成功", "配置已保存")
         except Exception as e:
-                logging.exception("保存配置失败")
-                messagebox.showerror("错误", f"保存配置失败: {e}")
+            self.logger.exception("保存配置失败")
+            messagebox.showerror("错误", f"保存配置失败: {e}")
 
     def load_config(self):
-        config_file = get_config_file()
-        if os.path.exists(config_file):
-            try:
-                with open(config_file, 'r') as f:
-                    config = json.load(f)
-                    path = config.get("python_path", "")
-                    port = config.get("port", 8080)
-                    host_value = config.get("host", "127.0.0.1")
-                    allow_external = config.get("allow_external_access", False)
-                    selection_label = config.get("selection_label", "")
-                    
-                    self.port_var.set(str(port))
-                    self.allow_external_var.set(bool(allow_external))
-                    if self.allow_external_var.get():
-                        self.host_var.set("0.0.0.0")
-                    else:
-                        self.host_var.set("127.0.0.1")
-                    if not self.allow_external_var.get() and host_value not in ("0.0.0.0", "::"):
-                        self.host_var.set(str(host_value))
-                    
-                    if selection_label:
-                        self.python_path_var.set(selection_label)
-                    elif path:
-                         self.python_path_var.set(path)
-            except Exception:
-                logging.exception("读取配置失败")
+        try:
+            config = self.config_mgr.load_launcher_config()
+            path = config.get("python_path", "")
+            port = config.get("port", 8080)
+            host_value = config.get("host", "127.0.0.1")
+            allow_external = config.get("allow_external_access", False)
+            selection_label = config.get("selection_label", "")
+            
+            self.port_var.set(str(port))
+            self.allow_external_var.set(bool(allow_external))
+            if self.allow_external_var.get():
+                self.host_var.set("0.0.0.0")
+            else:
+                self.host_var.set("127.0.0.1")
+            if not self.allow_external_var.get() and host_value not in ("0.0.0.0", "::"):
+                self.host_var.set(str(host_value))
+            
+            if selection_label:
+                self.python_path_var.set(selection_label)
+            elif path:
+                    self.python_path_var.set(path)
+        except Exception:
+            self.logger.exception("读取配置失败")
 
     def start_service(self):
         if self.service_process:
@@ -255,11 +468,19 @@ class LauncherApp:
 
         if not self.validate_port_input():
             return
+
+        # 验证 MapProxy 配置
+        try:
+            self.config_mgr.validate_mapproxy_config()
+        except Exception as e:
+            if not messagebox.askyesno("配置验证警告", f"MapProxy 配置验证失败:\n{e}\n\n是否仍要尝试启动服务?"):
+                return
             
         port = int(self.port_var.get())
         self.update_host_from_access()
         host_value = self.host_var.get().strip()
-        if self.is_port_in_use(port):
+        
+        if is_port_in_use(port, host_value):
              messagebox.showerror("错误", f"端口 {port} 已被占用")
              return
         
@@ -277,11 +498,12 @@ class LauncherApp:
         
         # 判断是 Internal 还是 External
         if "Internal" in selection or python_path == sys.executable:
-            # Internal Mode: 调用 exe 本身进入 service 模式
-            # 注意：sys.executable 在 frozen 模式下是 exe 路径
+            # Internal Mode
+            # 直接调用当前可执行文件（或 python），并传递 --service 参数
+            # 由于我们在 main block 添加了参数分发，这将启动服务而不是 GUI
             cmd = [sys.executable, '--service']
         else:
-            # External Mode: 调用外部 Python 运行部署好的 main.py
+            # External Mode
             if not os.path.exists(python_path):
                  messagebox.showerror("错误", "Python 路径无效")
                  return
@@ -323,7 +545,7 @@ class LauncherApp:
             self.btn_stop.config(state="normal")
             
         except Exception as e:
-            logging.exception("启动失败")
+            self.logger.exception("启动失败")
             self.log(f"启动失败: {e}", "error")
             self.set_status("启动失败", "red")
 
@@ -471,7 +693,8 @@ class LauncherApp:
         if url:
             self.root.clipboard_clear()
             self.root.clipboard_append(url)
-            messagebox.showinfo("提示", "地址已复制到剪贴板")
+            self.show_toast("地址已复制到剪贴板")
+            # messagebox.showinfo("提示", "地址已复制到剪贴板")
 
     def open_browser(self):
         url = self.service_url_var.get()
@@ -485,268 +708,52 @@ class LauncherApp:
         else:
             messagebox.showerror("错误", "工作目录不存在")
 
-    def get_layer_info(self):
-        """解析 mapproxy.yaml 获取图层信息"""
-        yaml_path = os.path.join(get_work_dir(), "mapproxy.yaml")
-        if not os.path.exists(yaml_path):
-            return []
-        
-        layers_info = []
-        try:
-            with open(yaml_path, 'r', encoding='utf-8') as f:
-                conf = yaml.safe_load(f)
-                
-            layers = conf.get('layers', [])
-            caches = conf.get('caches', {})
-            
-            for layer in layers:
-                name = layer.get('name')
-                title = layer.get('title', name)
-                sources = layer.get('sources', [])
-                
-                # 尝试查找缓存格式
-                fmt = "Unknown"
-                if sources:
-                    cache_name = sources[0] # 假设第一个 source 是 cache
-                    if cache_name in caches:
-                        cache_conf = caches[cache_name]
-                        # 查找 format
-                        # 通常在 cache -> grids (implicit) -> format? 
-                        # 或者 cache -> cache (file) -> ...
-                        # 简化：查看 cache 的 source 的 format? 不对，cache 是输出
-                        # 查找 cache 的 image options?
-                        # 简单起见，查看 cache 定义是否有 image format
-                        # 实际上 MapProxy 默认 png 或 jpeg
-                        
-                        # 尝试从 grids 猜测? 不太准
-                        # 尝试直接读取 cache 配置中的 request_format 或 format
-                        fmt = cache_conf.get('request_format') or cache_conf.get('format')
-                        
-                        if not fmt:
-                            # 再次深入：如果 cache 的 source 是 demo_source
-                            pass
-                        
-                        if not fmt:
-                            fmt = "image/png (Default)"
-
-                layers_info.append({
-                    'name': name,
-                    'title': title,
-                    'format': fmt
-                })
-        except Exception as e:
-            logging.exception("解析 mapproxy.yaml 失败")
-            
-        return layers_info
-
-    def show_toast(self, message):
-        """显示一个无阻塞的浮动提示"""
-        toast = tk.Toplevel(self.root)
-        toast.overrideredirect(True) # 无边框
-        
-        # 获取主窗口位置，计算居中位置
-        root_x = self.root.winfo_rootx()
-        root_y = self.root.winfo_rooty()
-        root_w = self.root.winfo_width()
-        root_h = self.root.winfo_height()
-        
-        # 简单估算 toast 大小
-        toast_w = 200
-        toast_h = 40
-        x = root_x + (root_w - toast_w) // 2
-        y = root_y + (root_h - toast_h) // 2
-        
-        toast.geometry(f"{toast_w}x{toast_h}+{x}+{y}")
-        
-        label = tk.Label(toast, text=message, bg="#333333", fg="white", padx=10, pady=5, font=("Arial", 10))
-        label.pack(fill="both", expand=True)
-        
-        # 自动关闭
-        toast.after(1500, toast.destroy)
-
-    def copy_text(self, text):
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self.show_toast(f"已复制: {text}")
-
-    def create_layer_info_widgets(self):
-        """创建图层信息显示区域"""
-        frame_layers = ttk.LabelFrame(self.root, text="图层信息", padding=10)
-        frame_layers.pack(fill="x", padx=10, pady=5)
-        
-        layers = self.get_layer_info()
-        
-        if not layers:
-            ttk.Label(frame_layers, text="未找到图层配置").pack()
-            return
-            
-        # 表头
-        headers_frame = ttk.Frame(frame_layers)
-        headers_frame.pack(fill="x", pady=(0, 5))
-        ttk.Label(headers_frame, text="图层名称 (点击复制 📋)", font=("Arial", 9), width=35).pack(side="left")
-        ttk.Label(headers_frame, text="缓存格式 (点击复制 📋)", font=("Arial", 9), width=20).pack(side="left")
-        
-        # 列表内容
-        content_frame = ttk.Frame(frame_layers)
-        content_frame.pack(fill="x")
-        
-        def on_enter(e):
-            e.widget['foreground'] = 'blue'
-            e.widget['cursor'] = 'hand2'
-
-        def on_leave(e):
-            e.widget['foreground'] = 'black'
-            e.widget['cursor'] = 'arrow'
-
-        for layer in layers:
-            row = ttk.Frame(content_frame)
-            row.pack(fill="x", pady=2)
-            
-            name = layer['name']
-            fmt = layer['format']
-            
-            # 图层名称 Label
-            # 增加一个 📋 图标或者只是文本提示
-            lbl_name = tk.Label(row, text=f"{name} 📋", bg="#f0f0f0", fg="black", anchor="w", width=35)
-            lbl_name.pack(side="left")
-            lbl_name.bind("<Button-1>", lambda e, t=name: self.copy_text(t))
-            lbl_name.bind("<Enter>", on_enter)
-            lbl_name.bind("<Leave>", on_leave)
-            
-            # 缓存格式 Label (非粗体)
-            lbl_fmt = tk.Label(row, text=f"{fmt} 📋", bg="#f0f0f0", fg="black", anchor="w", width=20, font=("Arial", 9))
-            lbl_fmt.pack(side="left", padx=5)
-            lbl_fmt.bind("<Button-1>", lambda e, t=fmt: self.copy_text(t))
-            lbl_fmt.bind("<Enter>", on_enter)
-            lbl_fmt.bind("<Leave>", on_leave)
-
-    def create_widgets(self):
-        # 1. Python 选择区域
-        frame_py = ttk.LabelFrame(self.root, text="Python 环境设置", padding=10)
-        frame_py.pack(fill="x", padx=10, pady=5)
-        
-        ttk.Label(frame_py, text="Python 版本:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.combo_python = ttk.Combobox(frame_py, textvariable=self.python_path_var, width=60, state="readonly")
-        self.combo_python.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        
-        # 绑定事件以清除选中高亮，作为双重保险
-        def clear_selection(event):
-            try:
-                # 移除焦点，从而彻底移除高亮
-                self.root.focus_set()
-                event.widget.selection_clear()
-            except:
-                pass
-        
-        self.combo_python.bind("<<ComboboxSelected>>", clear_selection)
-        # 注意：FocusIn 事件如果也移除焦点，会导致无法再次点击选择，所以这里只在选中后移除
-        # self.combo_python.bind("<FocusIn>", clear_selection)
-        
-        ttk.Button(frame_py, text="刷新列表", command=self.scan_pythons).grid(row=0, column=2, padx=5, pady=5)
-
-        # 2. 端口设置区域
-        frame_port = ttk.LabelFrame(self.root, text="服务设置", padding=10)
-        frame_port.pack(fill="x", padx=10, pady=5)
-        
-        ttk.Label(frame_port, text="服务端口:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.entry_port = ttk.Entry(frame_port, textvariable=self.port_var, width=10)
-        self.entry_port.grid(row=0, column=1, padx=5, pady=5, sticky="w")
-        self.entry_port.bind('<KeyRelease>', self.validate_port_input)
-        ttk.Label(frame_port, text="(范围: 1-65535)").grid(row=0, column=2, padx=5, pady=5, sticky="w")
-
-        ttk.Label(frame_port, text="绑定 Host:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.entry_host = ttk.Entry(frame_port, textvariable=self.host_var, width=20, state="readonly")
-        self.entry_host.grid(row=1, column=1, padx=5, pady=5, sticky="w")
-        ttk.Label(frame_port, text="(勾选外部访问后将自动绑定 0.0.0.0)").grid(row=1, column=2, padx=5, pady=5, sticky="w")
-        chk = ttk.Checkbutton(frame_port, text="允许外部访问（绑定到所有网卡）", variable=self.allow_external_var, command=self.update_host_from_access)
-        chk.grid(row=2, column=0, columnspan=3, padx=5, pady=5, sticky="w")
-
-        # 3. 图层信息区域 (新增)
-        self.create_layer_info_widgets()
-
-        # 4. 控制按钮区域
-        frame_ctrl = ttk.Frame(self.root, padding=10)
-        frame_ctrl.pack(fill="x", padx=10)
-        
-        self.btn_save = ttk.Button(frame_ctrl, text="确认设置", command=self.save_config)
-        self.btn_save.pack(side="left", padx=5)
-        
-        self.btn_start = ttk.Button(frame_ctrl, text="启动服务", command=self.start_service)
-        self.btn_start.pack(side="left", padx=5)
-        
-        self.btn_stop = ttk.Button(frame_ctrl, text="停止服务", command=self.stop_service, state="disabled")
-        self.btn_stop.pack(side="left", padx=5)
-        
-        ttk.Button(frame_ctrl, text="高级设置", command=self.show_advanced).pack(side="right", padx=5)
-
-        # 5. 状态与快捷操作区域
-        self.frame_status = ttk.LabelFrame(self.root, text="运行状态", padding=10)
-        self.frame_status.pack(fill="x", padx=10, pady=5)
-        
-        # 状态指示
-        frame_status_indicator = ttk.Frame(self.frame_status)
-        frame_status_indicator.pack(fill="x", pady=(0, 5))
-        
-        ttk.Label(frame_status_indicator, text="当前状态:").pack(side="left")
-        self.lbl_status = tk.Label(frame_status_indicator, textvariable=self.status_var, font=("Arial", 10, "bold"), fg="gray")
-        self.lbl_status.pack(side="left", padx=5)
-        
-        # 地址与按钮
-        frame_actions = ttk.Frame(self.frame_status)
-        frame_actions.pack(fill="x")
-        
-        ttk.Label(frame_actions, text="访问地址:").pack(side="left")
-        self.entry_url = ttk.Entry(frame_actions, textvariable=self.service_url_var, width=30, state="readonly")
-        self.entry_url.pack(side="left", padx=5)
-        
-        self.btn_copy = ttk.Button(frame_actions, text="复制", command=self.copy_url, state="disabled")
-        self.btn_copy.pack(side="left", padx=2)
-        
-        self.btn_browser = ttk.Button(frame_actions, text="浏览器打开", command=self.open_browser, state="disabled")
-        self.btn_browser.pack(side="left", padx=2)
-        
-        self.btn_logdir = ttk.Button(frame_actions, text="打开工作目录", command=self.open_work_dir)
-        self.btn_logdir.pack(side="left", padx=2)
-
-        # 6. 日志区域
-        frame_log = ttk.LabelFrame(self.root, text="运行日志", padding=10)
-        frame_log.pack(fill="both", expand=True, padx=10, pady=5)
-        
-        self.text_log = scrolledtext.ScrolledText(frame_log, height=12, state="disabled")
-        self.text_log.pack(fill="both", expand=True)
-        self.text_log.tag_config("error", foreground="red")
-        self.text_log.tag_config("info", foreground="black")
-        self.text_log.tag_config("success", foreground="green")
-
-    def set_status(self, status, color="gray", url=""):
-        self.status_var.set(status)
-        self.lbl_status.config(fg=color)
-        self.service_url_var.set(url)
-        
-        if url:
-            self.btn_copy.config(state="normal")
-            self.btn_browser.config(state="normal")
-        else:
-            self.btn_copy.config(state="disabled")
-            self.btn_browser.config(state="disabled")
-
 if __name__ == "__main__":
-    # 命令行参数检查，决定运行模式
-    if '--service' in sys.argv:
-        # Service 模式：调用 main.py 的服务逻辑
-        # 注意：这里我们需要从 main.py 导入 MapProxyServer
-        # 如果是打包环境，main 模块应该可以直接导入（因为它被打包了）
-        # 如果是脚本环境，main.py 就在旁边
-        try:
-            from main import MapProxyServer
-            server = MapProxyServer()
+    # Check for service arguments to avoid launching GUI when running as service
+    if "--service" in sys.argv:
+        if main:
+            server = main.MapProxyServer()
             server.run()
-        except Exception as e:
-            # 如果出错，写到 stderr，会被父进程（GUI）捕获
-            print(f"Service startup failed: {e}", file=sys.stderr)
+            sys.exit(0)
+        else:
+            print("Error: main module not found.")
             sys.exit(1)
-    else:
-        # GUI 模式
+
+    try:
+        # High DPI support
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+        
+    try:
         root = tk.Tk()
         app = LauncherApp(root)
         root.mainloop()
+    except Exception as e:
+        # Log crash to file in the same directory as executable
+        import traceback
+        error_msg = f"Application crashed:\n{str(e)}\n\n{traceback.format_exc()}"
+        
+        try:
+            # Try to determine a safe place to log
+            if getattr(sys, 'frozen', False):
+                base_dir = os.path.dirname(sys.executable)
+            else:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            log_path = os.path.join(base_dir, "launcher_crash.log")
+            
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(error_msg)
+                
+            # Try to show message box if possible
+            import tkinter.messagebox
+            # If root exists but mainloop failed
+            if 'root' not in locals():
+                root = tk.Tk()
+                root.withdraw()
+            tkinter.messagebox.showerror("Fatal Error", f"Application crashed. See launcher_crash.log for details.\n\n{str(e)}")
+        except:
+            pass # Failed to log or show message
+

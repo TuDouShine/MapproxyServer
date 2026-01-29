@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger("SeedManager")
 
 class SeedManager:
-    def __init__(self, project_root):
+    def __init__(self, project_root, venv_dir=None):
         self.project_root = project_root
         self.mapproxy_conf = os.path.join(project_root, 'mapproxy.yaml')
         self.seed_conf = os.path.join(project_root, 'mapproxy-seed.yaml')
@@ -28,21 +28,31 @@ class SeedManager:
         self.seed_max_retries, self.seed_retry_backoff = self._get_seed_retry_config()
         
         # 探测 mapproxy-seed 路径
-        # 1. Windows venv
-        win_path = os.path.join(project_root, "venv", "Scripts", "mapproxy-seed.exe")
-        # 2. Linux/Unix venv
-        unix_path = os.path.join(project_root, "venv", "bin", "mapproxy-seed")
+        self.seed_cmd = "mapproxy-seed"
         
-        if os.path.exists(win_path):
-            self.seed_cmd = win_path
-            logger.info(f"Using mapproxy-seed at: {self.seed_cmd}")
-        elif os.path.exists(unix_path):
-            self.seed_cmd = unix_path
-            logger.info(f"Using mapproxy-seed at: {self.seed_cmd}")
-        else:
-            # Fallback: 假设在 PATH 中
-            self.seed_cmd = "mapproxy-seed"
-            logger.warning(f"mapproxy-seed not found in venv, assuming it is in PATH.")
+        # Determine venv path
+        search_dirs = []
+        if venv_dir:
+            search_dirs.append(venv_dir)
+        
+        search_dirs.append(os.path.join(project_root, ".venv"))
+        search_dirs.append(os.path.join(project_root, "venv"))
+        
+        found = False
+        for v_dir in search_dirs:
+            if os.name == 'nt':
+                path = os.path.join(v_dir, "Scripts", "mapproxy-seed.exe")
+            else:
+                path = os.path.join(v_dir, "bin", "mapproxy-seed")
+            
+            if os.path.exists(path):
+                self.seed_cmd = path
+                logger.info(f"Using mapproxy-seed at: {self.seed_cmd}")
+                found = True
+                break
+        
+        if not found:
+            logger.warning(f"mapproxy-seed not found in venv(s), assuming it is in PATH.")
 
     def _get_seed_concurrency(self):
         raw_value = os.environ.get("MAPPROXY_SEED_CONCURRENCY", "").strip()
@@ -173,9 +183,28 @@ class SeedManager:
             elif not os.path.exists(executable):
                  raise FileNotFoundError(f"可执行文件不存在: {executable}")
 
+            # Windows 下隐藏控制台窗口
+            startupinfo = None
+            creationflags = 0
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0 # SW_HIDE
+                creationflags = subprocess.CREATE_NO_WINDOW
+
             attempt = 0
             while True:
-                process = subprocess.run(cmd, capture_output=True, text=True)
+                # 使用 Popen 替代 run 以便更好地控制窗口
+                process = subprocess.Popen(
+                    cmd, 
+                    stdout=subprocess.PIPE, 
+                    stderr=subprocess.PIPE, 
+                    text=True,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags
+                )
+                stdout, stderr = process.communicate()
+                
                 if process.returncode == 0:
                     logger.info("Seed 任务完成。")
                     status['last_success'] = datetime.now().isoformat()
@@ -184,9 +213,10 @@ class SeedManager:
                     if current_hash:
                         status['seed_hash'] = current_hash
                     break
-                logger.error(f"Seed 任务失败: {process.stderr}")
+                
+                logger.error(f"Seed 任务失败: {stderr}")
                 status['status'] = 'failed'
-                status['error'] = process.stderr
+                status['error'] = stderr
                 if attempt >= self.seed_max_retries:
                     break
                 attempt += 1
