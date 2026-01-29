@@ -47,6 +47,8 @@ hiddenimports = [
     'yaml',
     'PIL',
     'psutil',
+    'typing_extensions',
+    'charset_normalizer',
 ]
 
 # 平台特定的排除项

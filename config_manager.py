@@ -13,6 +13,7 @@ class ConfigManager:
         
         # Config paths
         self.config_json_path = os.path.join(work_dir, "config.json")
+        self.advanced_config_path = os.path.join(work_dir, "advanced_settings.json")
         self.mapproxy_yaml_path = os.path.join(work_dir, "mapproxy.yaml")
         self.seed_yaml_path = os.path.join(work_dir, "mapproxy-seed.yaml")
         
@@ -64,7 +65,61 @@ class ConfigManager:
 
     def load_launcher_config(self):
         """Load GUI launcher config"""
-        return load_json(self.config_json_path)
+        config = load_json(self.config_json_path)
+        return config
+
+    def get_default_advanced_config(self):
+        """Get default advanced settings"""
+        return {
+            "concurrency": 2,
+            "retry": {
+                "enabled": False,
+                "max_retries": 2,
+                "interval": 5
+            },
+            "alert": {
+                "enabled": False
+            }
+        }
+
+    def load_advanced_config(self):
+        """Load advanced settings from independent file"""
+        if not os.path.exists(self.advanced_config_path):
+            return self.get_default_advanced_config()
+            
+        config = load_json(self.advanced_config_path)
+        defaults = self.get_default_advanced_config()
+        
+        # Ensure structure matches defaults (merge)
+        if "concurrency" not in config:
+            config["concurrency"] = defaults["concurrency"]
+        
+        if "retry" not in config:
+            config["retry"] = defaults["retry"]
+        else:
+            for k, v in defaults["retry"].items():
+                if k not in config["retry"]:
+                    config["retry"][k] = v
+                    
+        if "alert" not in config:
+            config["alert"] = defaults["alert"]
+        else:
+             for k, v in defaults["alert"].items():
+                if k not in config["alert"]:
+                    config["alert"][k] = v
+        
+        # Sanitize: Remove deprecated keys if they exist in file
+        if "alert" in config:
+            config["alert"].pop("alert_email", None)
+            config["alert"].pop("alert_threshold", None)
+            config["alert"].pop("email", None)
+            config["alert"].pop("threshold", None)
+                    
+        return config
+
+    def save_advanced_config(self, config_data):
+        """Save advanced settings"""
+        save_json(self.advanced_config_path, config_data)
 
     def save_launcher_config(self, config_data):
         """Save GUI launcher config"""

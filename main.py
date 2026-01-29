@@ -20,7 +20,10 @@ class MapProxyServer:
         os.makedirs(self.work_dir, exist_ok=True)
         
         # 2. Setup Logging
-        self.logs_dir = os.path.join(self.work_dir, "logs")
+        # Use persistent base dir for logs to match seed.log location
+        base_dir = get_base_dir()
+        self.logs_dir = os.path.join(base_dir, "logs")
+        os.makedirs(self.logs_dir, exist_ok=True)
         self.logger = setup_logging(os.path.join(self.logs_dir, "server.log"), "MapProxyServer")
         
         # 3. Initialize Managers
@@ -77,15 +80,43 @@ class MapProxyServer:
             self.config_mgr = ConfigManager(self.work_dir, self.project_root)
             self.env_mgr = EnvManager(self.work_dir)
             self.seed_orch = SeedOrchestrator(self.work_dir)
-            # Update logging location
-            self.logs_dir = os.path.join(self.work_dir, "logs")
-            self.logger = setup_logging(os.path.join(self.logs_dir, "server.log"), "MapProxyServer")
+            # Update logging location - Keep logs in base_dir/logs as per requirement
+            # self.logs_dir = os.path.join(self.work_dir, "logs")
+            # self.logger = setup_logging(os.path.join(self.logs_dir, "server.log"), "MapProxyServer")
 
         self.logger.info("MapProxy 服务发布程序启动...")
         
         # 4. Initialize Configs
         self.print_step(f"初始化工作目录: {self.work_dir}")
         self.config_mgr.init_configs()
+        
+        # Load advanced settings and inject into environment for SeedManager
+        try:
+            adv_config = self.config_mgr.load_advanced_config()
+            
+            # Concurrency
+            if "MAPPROXY_SEED_CONCURRENCY" not in os.environ:
+                os.environ["MAPPROXY_SEED_CONCURRENCY"] = str(adv_config.get("concurrency", 2))
+                
+            # Retry
+            retry = adv_config.get("retry", {})
+            if retry.get("enabled", False):
+                if "MAPPROXY_SEED_MAX_RETRIES" not in os.environ:
+                    os.environ["MAPPROXY_SEED_MAX_RETRIES"] = str(retry.get("max_retries", 2))
+                if "MAPPROXY_SEED_RETRY_BACKOFF" not in os.environ:
+                    os.environ["MAPPROXY_SEED_RETRY_BACKOFF"] = str(retry.get("interval", 5))
+            else:
+                if "MAPPROXY_SEED_MAX_RETRIES" not in os.environ:
+                     os.environ["MAPPROXY_SEED_MAX_RETRIES"] = "0"
+                     
+            # Alert
+            alert = adv_config.get("alert", {})
+            if "MAPPROXY_SEED_ALERT_ENABLED" not in os.environ:
+                os.environ["MAPPROXY_SEED_ALERT_ENABLED"] = "true" if alert.get("enabled", False) else "false"
+                
+            self.logger.info("Advanced settings loaded into environment.")
+        except Exception as e:
+            self.logger.warning(f"Failed to load advanced settings: {e}")
         
         # Validate configs
         self.logger.info("Verifying mapproxy configuration...")

@@ -26,6 +26,7 @@ class SeedManager:
         self.status_file = os.path.join(project_root, 'seed_status.json')
         self.seed_concurrency = self._get_seed_concurrency()
         self.seed_max_retries, self.seed_retry_backoff = self._get_seed_retry_config()
+        self.alert_enabled = self._get_seed_alert_config()
         
         # 探测 mapproxy-seed 路径
         self.seed_cmd = "mapproxy-seed"
@@ -105,6 +106,15 @@ class SeedManager:
         if backoff < 0:
             backoff = 0
         return max_retries, backoff
+
+    def _get_seed_alert_config(self):
+        enabled = os.environ.get("MAPPROXY_SEED_ALERT_ENABLED", "false").lower() == "true"
+        return enabled
+
+    def send_alert(self, message):
+        if not self.alert_enabled:
+            return
+        logger.warning(f"[ALERT] Seed Failure: {message}")
 
     def load_status(self):
         if os.path.exists(self.status_file):
@@ -218,6 +228,7 @@ class SeedManager:
                 status['status'] = 'failed'
                 status['error'] = stderr
                 if attempt >= self.seed_max_retries:
+                    self.send_alert(f"Seed 任务在重试 {self.seed_max_retries} 次后仍然失败。最后一次错误: {stderr}")
                     break
                 attempt += 1
                 if self.seed_retry_backoff > 0:
