@@ -10,7 +10,11 @@ def get_python_version(path):
     """获取指定 Python 解释器的版本信息"""
     try:
         # 使用 -V 获取版本，例如 "Python 3.9.13"
-        result = subprocess.run([path, '-V'], capture_output=True, text=True, timeout=2)
+        kwargs = {}
+        if os.name == 'nt':
+            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            
+        result = subprocess.run([path, '-V'], capture_output=True, text=True, timeout=2, **kwargs)
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception:
