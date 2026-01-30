@@ -270,6 +270,7 @@ class LauncherApp:
         self.python_path_var = tk.StringVar()
         self.port_var = tk.StringVar(value="8080")
         self.host_var = tk.StringVar(value="127.0.0.1")
+        self.waitress_threads_var = tk.StringVar(value="16")
         self.allow_external_var = tk.BooleanVar(value=False)
         self.service_process = None
         self.log_queue = queue.Queue()
@@ -376,10 +377,15 @@ class LauncherApp:
         config_line = ttk.Frame(frame_config)
         config_line.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 15))
         
-        ttk.Label(config_line, text="端口:").pack(side=tk.LEFT)
+        ttk.Label(config_line, text="端口:").pack(side=tk.LEFT, padx=(5, 5))
         self.entry_port = ttk.Entry(config_line, textvariable=self.port_var, width=8)
         self.entry_port.pack(side=tk.LEFT, padx=5)
         self.entry_port.bind('<KeyRelease>', self.validate_port_input)
+
+        ttk.Label(config_line, text="线程:").pack(side=tk.LEFT, padx=(5, 5))
+        self.entry_threads = ttk.Entry(config_line, textvariable=self.waitress_threads_var, width=8)
+        self.entry_threads.pack(side=tk.LEFT, padx=5)
+        self.entry_threads.bind('<KeyRelease>', self.validate_threads_input)
         
         self.chk_external = ttk.Checkbutton(config_line, text="允许外部访问", variable=self.allow_external_var, command=self.update_host_from_access)
         self.chk_external.pack(side=tk.LEFT, padx=10)
@@ -446,7 +452,7 @@ class LauncherApp:
         self.btn_browser.pack(side=tk.RIGHT, padx=5)
 
         # 4. 图层信息 (Row 3)
-        frame_layers = ttk.LabelFrame(main_frame, text="图层列表", padding="10", style="Card.TLabelframe")
+        frame_layers = ttk.LabelFrame(main_frame, text="图层列表(-点击复制)", padding="10", style="Card.TLabelframe")
         frame_layers.grid(row=3, column=0, sticky="nsew", pady=(0, 15))
         
         columns = ("name", "format", "title")
@@ -718,6 +724,7 @@ class LauncherApp:
         
         # Config
         self.entry_port.config(state=state)
+        self.entry_threads.config(state=state)
         self.chk_external.config(state=state)
         self.btn_save.config(state=state)
         self.btn_advanced.config(state=state)
@@ -846,6 +853,22 @@ class LauncherApp:
             self.btn_save.config(state="disabled")
             return False
 
+    def validate_threads_input(self, event=None):
+        try:
+            threads = int(self.waitress_threads_var.get())
+            if 1 <= threads <= 32:
+                self.entry_threads.config(foreground="black")
+                # Also check port to ensure save button state is correct overall
+                if self.validate_port_input():
+                    self.btn_save.config(state="normal")
+                return True
+            else:
+                raise ValueError
+        except ValueError:
+            self.entry_threads.config(foreground="red")
+            self.btn_save.config(state="disabled")
+            return False
+
     def save_config(self):
         # Double check: Prevent saving if service is running
         if self.service_process:
@@ -854,6 +877,10 @@ class LauncherApp:
 
         if not self.validate_port_input():
             messagebox.showerror("错误", "端口号无效")
+            return
+
+        if not self.validate_threads_input():
+            messagebox.showerror("错误", "线程数无效 (1-32)")
             return
 
         selection = self.python_path_var.get()
@@ -879,6 +906,7 @@ class LauncherApp:
             "port": int(self.port_var.get()),
             "host": host_value,
             "allow_external_access": bool(self.allow_external_var.get()),
+            "waitress_threads": int(self.waitress_threads_var.get()),
             "selection_label": selection # 保存完整标签以便回显
         }
         
@@ -898,9 +926,11 @@ class LauncherApp:
             port = config.get("port", 8080)
             host_value = config.get("host", "127.0.0.1")
             allow_external = config.get("allow_external_access", False)
+            threads = config.get("waitress_threads", 16)
             selection_label = config.get("selection_label", "")
             
             self.port_var.set(str(port))
+            self.waitress_threads_var.set(str(threads))
             self.allow_external_var.set(bool(allow_external))
             if self.allow_external_var.get():
                 self.host_var.set("0.0.0.0")
@@ -969,7 +999,7 @@ class LauncherApp:
             cmd = [python_path, script_path, '--service', '--python-path', python_path]
 
         # 添加通用参数
-        cmd.extend(['--port', str(port), '--host', host_value, '--work-dir', work_dir])
+        cmd.extend(['--port', str(port), '--host', host_value, '--work-dir', work_dir, '--threads', self.waitress_threads_var.get()])
         self.current_host = host_value
         
         self.log(f"正在启动服务: {' '.join(cmd)}")

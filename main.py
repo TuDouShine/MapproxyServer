@@ -67,6 +67,7 @@ class MapProxyServer:
         parser = argparse.ArgumentParser(description='MapProxy Server')
         parser.add_argument('--port', type=int, default=8080, help='Service port')
         parser.add_argument('--host', type=str, default="127.0.0.1", help='Service host')
+        parser.add_argument('--threads', type=int, default=16, help='Waitress threads count')
         parser.add_argument('--service', action='store_true', help='Run in service mode (non-interactive)')
         parser.add_argument('--work-dir', type=str, default=None, help='Working directory for data and configs')
         parser.add_argument('--python-path', type=str, default=None, help='Path to Python interpreter to use')
@@ -188,7 +189,7 @@ class MapProxyServer:
 
         # 7. Start Service
         svc_runner = ServiceRunner(self.work_dir, self.env_mgr.venv_dir if not getattr(sys, 'frozen', False) else None)
-        svc_runner.run_service(args.host, args.port, python_cmd=venv_python)
+        svc_runner.run_service(args.host, args.port, python_cmd=venv_python, threads=args.threads)
 
 if __name__ == "__main__":
     server = MapProxyServer()

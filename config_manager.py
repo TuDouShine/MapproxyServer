@@ -142,6 +142,16 @@ class ConfigManager:
         if not (1 <= port <= 65535):
             raise ValueError(f"Invalid port: {port}")
 
+        if "waitress_threads" in config:
+            threads = config.get("waitress_threads")
+            try:
+                threads = int(threads)
+            except (ValueError, TypeError):
+                raise ValueError(f"Invalid threads count: {threads}")
+            
+            if not (1 <= threads <= 32):
+                raise ValueError(f"Threads count must be between 1 and 32: {threads}")
+
     def validate_mapproxy_config(self):
         """Validate mapproxy.yaml using schema if available"""
         if not self.config_schema_path:

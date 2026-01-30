@@ -22,7 +22,7 @@ class ServiceRunner:
                 self.venv_python = os.path.join(self.venv_dir, "bin", "python")
                 self.venv_waitress = os.path.join(self.venv_dir, "bin", "waitress-serve")
 
-    def run_service(self, host, port, python_cmd=None):
+    def run_service(self, host, port, python_cmd=None, threads=16):
         """Start the MapProxy service"""
         display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
         
@@ -32,24 +32,25 @@ class ServiceRunner:
             sys.path.insert(0, self.work_dir)
 
         if self.is_frozen:
-            self._run_frozen(host, port, display_host)
+            self._run_frozen(host, port, display_host, threads)
         else:
-            self._run_venv(host, port, display_host, python_cmd)
+            self._run_venv(host, port, display_host, python_cmd, threads)
 
-    def _run_frozen(self, host, port, display_host):
+    def _run_frozen(self, host, port, display_host, threads=16):
         self.logger.info("使用内置环境启动 Waitress...")
         self.logger.info(f"监听: http://{display_host}:{port}/demo/")
+        self.logger.info(f"工作线程数: {threads}")
         self.logger.info("按 Ctrl+C 停止服务")
         try:
             from waitress import serve
             import config
-            serve(config.application, host=host, port=port)
+            serve(config.application, host=host, port=port, threads=threads)
         except ImportError:
             self.logger.exception("无法导入 Waitress 或配置")
         except Exception:
             self.logger.exception("服务运行出错")
 
-    def _run_venv(self, host, port, display_host, python_cmd=None):
+    def _run_venv(self, host, port, display_host, python_cmd=None, threads=16):
         run_cmd = []
         
         if python_cmd:
@@ -61,7 +62,7 @@ class ServiceRunner:
              else:
                  cmd_prefix = [str(python_cmd)]
                  
-             run_cmd = cmd_prefix + ['-m', 'waitress', f'--host={host}', f'--port={port}', 'config:application']
+             run_cmd = cmd_prefix + ['-m', 'waitress', f'--host={host}', f'--port={port}', f'--threads={threads}', 'config:application']
              
         elif self.venv_dir:
             # Use venv
@@ -71,9 +72,9 @@ class ServiceRunner:
                  
             if not os.path.exists(self.venv_waitress):
                 # Fallback to python -m waitress
-                run_cmd = [self.venv_python, '-m', 'waitress', f'--host={host}', f'--port={port}', 'config:application']
+                run_cmd = [self.venv_python, '-m', 'waitress', f'--host={host}', f'--port={port}', f'--threads={threads}', 'config:application']
             else:
-                run_cmd = [self.venv_waitress, f'--host={host}', f'--port={port}', 'config:application']
+                run_cmd = [self.venv_waitress, f'--host={host}', f'--port={port}', f'--threads={threads}', 'config:application']
         else:
             self.logger.error("No python environment available (venv_dir not set and python_cmd not provided).")
             return
