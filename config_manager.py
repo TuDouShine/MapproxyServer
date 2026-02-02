@@ -153,17 +153,12 @@ class ConfigManager:
                 raise ValueError(f"Threads count must be between 1 and 32: {threads}")
 
     def validate_mapproxy_config(self):
-        """Validate mapproxy.yaml using schema if available"""
-        if not self.config_schema_path:
-            self.logger.warning("Config schema not found. Skipping validation.")
+        """Validate mapproxy.yaml against schema"""
+        if not self.config_schema_path or not os.path.exists(self.config_schema_path):
+            self.logger.warning("Schema not found, skipping validation.")
             return True
-
-        if not os.path.exists(self.mapproxy_yaml_path):
-            self.logger.warning(f"Config file not found: {self.mapproxy_yaml_path}")
-            return False
-
+            
         try:
-            # Lazy import dependencies to avoid crash if running in bare environment
             import yaml
             import jsonschema
             
@@ -189,6 +184,37 @@ class ConfigManager:
         except Exception:
             self.logger.exception(f"Unexpected validation error")
             raise
+
+    def validate_seed_config(self):
+        """
+        Diagnostic: Validate mapproxy-seed.yaml structure and log tasks.
+        Requested by Step 3 of validation plan.
+        """
+        if not os.path.exists(self.seed_yaml_path):
+            self.logger.warning(f"Seed config not found at {self.seed_yaml_path}")
+            return False
+            
+        try:
+            import yaml
+            with open(self.seed_yaml_path, 'r', encoding='utf-8') as f:
+                raw_config = yaml.safe_load(f)
+            
+            # Log raw dict keys to verify 'seeds' and task names exist
+            self.logger.info(f"Seed Config Loaded. Top-level keys: {list(raw_config.keys())}")
+            
+            if 'seeds' in raw_config:
+                seeds = raw_config['seeds']
+                self.logger.info(f"Found {len(seeds)} seed tasks: {list(seeds.keys())}")
+                for name, details in seeds.items():
+                    # Verify task structure (simple check)
+                    self.logger.debug(f"Task '{name}' keys: {list(details.keys())}")
+            else:
+                self.logger.warning("'seeds' section missing in mapproxy-seed.yaml")
+                
+            return True
+        except Exception as e:
+            self.logger.exception(f"Failed to validate seed config: {e}")
+            return False
 
     def get_service_config(self):
         """Get effective service configuration"""

@@ -14,15 +14,40 @@ log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(log_dir, "seed.log"), encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
+class SeedContextFilter(logging.Filter):
+    """Ensures 'seed_name' is present in the record."""
+    def filter(self, record):
+        if not hasattr(record, 'seed_name'):
+            record.seed_name = '-'
+        return True
+
+class StrictInfoFilter(logging.Filter):
+    """Filters only INFO level records."""
+    def filter(self, record):
+        return record.levelno == logging.INFO
+
 logger = logging.getLogger("SeedManager")
+logger.setLevel(logging.INFO)
+logger.addFilter(SeedContextFilter())
+
+# Clear existing handlers to avoid duplicates during reload
+if logger.handlers:
+    logger.handlers.clear()
+
+# File Handler (Captures all levels, uses unified format)
+file_handler = logging.FileHandler(os.path.join(log_dir, "seed.log"), encoding='utf-8')
+# Removed StrictInfoFilter to allow WARNING/ERROR
+# Standardized Format: Timestamp | Level | SeedName | Module | Message
+formatter = logging.Formatter('%(asctime)s | %(levelname)-2s | %(name)s | %(seed_name)s | %(message)s')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+# Stream Handler (Standard)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+logger.addHandler(stream_handler)
+
+logger.propagate = False
 
 class ProgressMonitor:
     def __init__(self, callback=None, progress_queue=None):
@@ -386,44 +411,96 @@ class SeedManager:
                     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
                     clean_line = ansi_escape.sub('', line)
                     
+                    # DEBUG: Log raw line to verify what we are receiving
+                    logger.debug(f"RAW: {clean_line}")
+
                     # Detect seed name change
-                    # Format typically: Seeding 'seed_name' with ...
+                    # Format 1: Seeding 'seed_name' with ... (Standard/Old)
                     seed_match = re.search(r"Seeding '(.+?)'", clean_line)
                     if seed_match:
                         current_seed_name = seed_match.group(1)
+                        logger.debug(f"Detected Seed Name (Format 1): {current_seed_name}", extra={'seed_name': f"[{current_seed_name}]"})
                     
+                    # Format 2: task_name: (Observed in current environment)
+                    # We look for a line that is just "name:" but exclude common info lines.
+                    else:
+                        task_match = re.match(r"^([a-zA-Z0-9_]+):$", clean_line)
+                        if task_match:
+                            candidate = task_match.group(1)
+                            # Filter out known keywords that look like tasks
+                            ignored_keywords = {'Levels', 'Overwriting', 'Check', 'Removing', 'Skipping'}
+                            if candidate not in ignored_keywords:
+                                current_seed_name = candidate
+                                logger.debug(f"Detected Seed Name (Format 2): {current_seed_name}", extra={'seed_name': f"[{current_seed_name}]"})
+
                     # Format log line with seed name
-                    log_line = clean_line
+                    # User requirement: Ensure seed_name is correctly populated in the log column (extra)
+                    # and matches the configuration.
+                    
+                    # 1. Prepare formatter extra
+                    # If current_seed_name is known, use it; otherwise use '-'
+                    seed_col_val = f"[{current_seed_name}]" if current_seed_name else '-'
+                    formatter_extra = {'seed_name': seed_col_val}
+                    
+                    # 2. Construct enhanced message
+                    # We keep the inline injection logic as it provides good context in the message body too,
+                    # especially if the column is narrow or for tools that just read the message.
+                    # However, if the user thinks 'seed_name' = '-' is an issue, they primarily mean the column.
+                    
+                    log_message = clean_line
+                    
                     if current_seed_name:
-                        # Check for timestamp pattern at start (e.g., [15:20:00])
-                        ts_match = re.match(r"^(\[.*?\])(.*)", clean_line)
-                        if ts_match:
-                            # Insert seed name after timestamp: [Time] SeedName ...
-                            timestamp_part = ts_match.group(1)
-                            rest_part = ts_match.group(2)
-                            log_line = f"{timestamp_part} {current_seed_name}{rest_part}"
-                        else:
-                            # Fallback to prefix if no timestamp
-                            log_line = f"[{current_seed_name}] {clean_line}"
+                         # Check for timestamp pattern at start (e.g., [15:20:00])
+                         ts_match = re.match(r"^(\[.*?\])(.*)", clean_line)
+                         if ts_match:
+                             # Insert seed name after timestamp: [Time] SeedName ...
+                             timestamp_part = ts_match.group(1)
+                             rest_part = ts_match.group(2)
+                             # Ensure spacing
+                             log_message = f"{timestamp_part} {current_seed_name}{rest_part}"
+                         else:
+                             # Fallback if no timestamp, check if we should prepend
+                             # If the line is just "Seeding 'task'...", prepending makes it "[task] Seeding 'task'..." which is fine.
+                             log_message = f"[{current_seed_name}] {clean_line}"
+                    
+                    # Special handling for Tile Errors and SSL Errors to extract more context
+                    tile_err_match = re.search(r"could not retrieve tile \((?P<x>\d+),\s*(?P<y>\d+),\s*(?P<z>\d+)\)", clean_line)
+                    ssl_err_match = re.search(r"ssl\.SSLEOFError", clean_line)
+                    
+                    if tile_err_match:
+                         x, y, z = tile_err_match.group('x'), tile_err_match.group('y'), tile_err_match.group('z')
+                         msg = f"Task: Seeding | Failed Tile: z={z}/x={x}/y={y} | Error: {clean_line}"
+                         # For errors, we might still want the seed name visible if not in timestamp format
+                         if current_seed_name and current_seed_name not in msg:
+                              msg = f"[{current_seed_name}] {msg}"
+                         logger.warning(msg, extra=formatter_extra)
+                         continue 
+                         
+                    if ssl_err_match:
+                         msg = f"Task: Seeding | Network Error: SSL Handshake Failed | {clean_line}"
+                         if current_seed_name and current_seed_name not in msg:
+                              msg = f"[{current_seed_name}] {msg}"
+                         logger.error(msg, extra=formatter_extra)
+                         continue
                     
                     parsed = monitor.parse_line(clean_line)
                     if parsed:
                         # Log the progress line so it appears in stdout (for GUI capture) and log file
-                        logger.info(log_line)
+                        logger.info(log_message, extra=formatter_extra)
                     elif not parsed:
                         # Log unparsed lines to debug why we are missing them, but avoid spamming too much
                         # Only log if it looks like progress but failed, or is an error
                         if "error" in clean_line.lower() or "exception" in clean_line.lower():
-                            logger.error(log_line if current_seed_name else f"Seed Output (Error): {clean_line}")
+                            logger.error(log_message, extra=formatter_extra)
                         elif "%" in clean_line or "tiles/s" in clean_line:
-                            logger.warning(log_line if current_seed_name else f"Seed Output (Unparsed Progress): {clean_line}")
+                            logger.warning(f"Seed Output (Unparsed Progress): {log_message}", extra=formatter_extra)
                         else:
                             # Log other info at debug level
                             # Also log "Seeding ..." lines here as INFO or DEBUG to keep context
                             if "Seeding" in clean_line:
-                                logger.info(log_line)
+                                logger.info(log_message, extra=formatter_extra)
                             else:
-                                logger.debug(log_line)
+                                logger.debug(log_message, extra=formatter_extra)
             
             process.wait()
             
