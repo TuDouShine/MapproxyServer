@@ -5,28 +5,159 @@ import time
 import json
 import logging
 import hashlib
+import queue
+import re
 from datetime import datetime
 
 # 配置日志
+log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("logs/seed.log", encoding='utf-8'),
+        logging.FileHandler(os.path.join(log_dir, "seed.log"), encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("SeedManager")
 
+class ProgressMonitor:
+    def __init__(self, callback=None, progress_queue=None):
+        self.callback = callback
+        self.progress_queue = progress_queue if progress_queue else queue.Queue()
+        self.start_time = time.time()
+        self.total_tiles = 0
+        self.processed_tiles = 0
+        self.last_update_time = 0
+        self.update_interval = 1.0 # 1 second
+        
+    def parse_line(self, line):
+        # 1. Try standard format: [15:20:00] 10.50% 100/1000 (15 tiles/s)
+        match = re.search(r'\[(.*?)\].*?\s+([0-9.]+)%\s+([0-9]+)\s*/\s*([0-9]+)\s+\(\s*([0-9]+)\s+tiles/s\)', line)
+        if match:
+            _, percent, processed, total, rate = match.groups()
+            self.update(float(percent), int(processed), int(total), int(rate))
+            return True
+            
+        # 2. Try format without total/rate (observed in logs): 
+        # [10:55:50]  4   3.12% -20037508.34279, ... (42 tiles)
+        match_alt = re.search(r'\[(.*?)\].*?\s+([0-9.]+)%.*?\(\s*([0-9]+)\s+tiles\)', line)
+        if match_alt:
+            _, percent, processed = match_alt.groups()
+            # Calculate total and rate internally
+            self.update_alt(float(percent), int(processed))
+            return True
+            
+        # 3. Detect Retry/Error messages for status updates
+        if "Retries left" in line or "Retry in" in line:
+            self.report_status("retrying", line)
+            return True
+            
+        return False
+
+    def update_alt(self, percent, processed):
+        """Handle updates where total and rate are missing"""
+        now = time.time()
+        
+        # Calculate rate based on processed difference
+        rate = 0
+        if self.last_update_time > 0 and now > self.last_update_time:
+            diff_processed = processed - self.processed_tiles
+            diff_time = now - self.last_update_time
+            if diff_time > 0 and diff_processed >= 0:
+                rate = int(diff_processed / diff_time)
+                
+        # Estimate total based on percent
+        total = 0
+        if percent > 0:
+            total = int(processed / (percent / 100.0))
+            
+        self.update(percent, processed, total, rate)
+
+    def report_status(self, status_code, message):
+        """Report non-progress status updates"""
+        info = {
+            "status": status_code,
+            "message": message,
+            "last_update": datetime.now().isoformat()
+        }
+        if self.progress_queue:
+            self.progress_queue.put(info)
+
+    def update(self, percent, processed, total, rate):
+        now = time.time()
+        if now - self.last_update_time < self.update_interval and percent < 100:
+            return
+
+        self.last_update_time = now
+        self.processed_tiles = processed
+        self.total_tiles = total
+        
+        elapsed = now - self.start_time
+        eta_seconds = 0
+        
+        # If rate is 0 (start or stalled), try to calculate avg rate from start
+        if rate == 0 and processed > 0 and elapsed > 0:
+             # Use overall average rate as fallback
+             rate = int(processed / elapsed)
+
+        if rate > 0:
+            remaining = total - processed
+            eta_seconds = remaining / rate
+        
+        info = {
+            "processed": processed,
+            "total": total,
+            "percent": percent,
+            "rate": rate,
+            "eta": self.format_time(eta_seconds),
+            "status": "running"
+        }
+        
+        if self.progress_queue:
+            self.progress_queue.put(info)
+            
+    def finish(self):
+        total_time = time.time() - self.start_time
+        avg_time = (total_time / self.processed_tiles) if self.processed_tiles > 0 else 0
+        
+        result = {
+            "total_time": total_time,
+            "total_tiles": self.processed_tiles,
+            "avg_time_per_tile": avg_time,
+            "status": "finished"
+        }
+        
+        if self.progress_queue:
+            self.progress_queue.put(result)
+            
+        if self.callback:
+            self.callback(result)
+
+    def format_time(self, seconds):
+        m, s = divmod(int(seconds), 60)
+        h, m = divmod(m, 60)
+        return "{:02d}:{:02d}:{:02d}".format(h, m, s)
+
 class SeedManager:
-    def __init__(self, project_root, venv_dir=None):
+    def __init__(self, project_root, venv_dir=None, progress_callback=None):
         self.project_root = project_root
+        self.progress_callback = progress_callback
+        self.progress_queue = queue.Queue()
         self.mapproxy_conf = os.path.join(project_root, 'mapproxy.yaml')
         self.seed_conf = os.path.join(project_root, 'mapproxy-seed.yaml')
         self.status_file = os.path.join(project_root, 'seed_status.json')
         self.seed_concurrency = self._get_seed_concurrency()
         self.seed_max_retries, self.seed_retry_backoff = self._get_seed_retry_config()
         self.alert_enabled = self._get_seed_alert_config()
+        
+        # Start status writer thread
+        self._stop_writer = threading.Event()
+        self._writer_thread = threading.Thread(target=self._status_writer_loop, daemon=True)
+        self._writer_thread.start()
         
         # 探测 mapproxy-seed 路径
         self.seed_cmd = "mapproxy-seed"
@@ -54,6 +185,34 @@ class SeedManager:
         
         if not found:
             logger.warning(f"mapproxy-seed not found in venv(s), assuming it is in PATH.")
+
+    def _status_writer_loop(self):
+        """
+        Background thread to write status updates to file.
+        Consumes from progress_queue and writes to seed_status.json.
+        """
+        while not self._stop_writer.is_set():
+            try:
+                # Get latest update (drain queue to get the most recent one if multiple)
+                item = None
+                try:
+                    while True:
+                        item = self.progress_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                
+                if item:
+                    # Update status file
+                    status = self.load_status()
+                    # Merge item into status
+                    status.update(item)
+                    status['last_update'] = datetime.now().isoformat()
+                    self.save_status(status)
+                
+                time.sleep(1.0)
+            except Exception:
+                # Avoid crashing the thread
+                time.sleep(1.0)
 
     def _get_seed_concurrency(self):
         raw_value = os.environ.get("MAPPROXY_SEED_CONCURRENCY", "").strip()
@@ -161,24 +320,17 @@ class SeedManager:
         logger.info("开始执行 Seed 任务...")
         status = self.load_status()
         status['last_run_start'] = datetime.now().isoformat()
-        status['status'] = 'running'
+        status['status'] = 'starting'
         self.save_status(status)
 
         try:
             current_hash = self._compute_seed_hash()
-            # 构造命令
-            # --concurrency 2: 控制并发
-            # --quiet: 减少输出
-            # --continue: 继续之前的进度 (如果支持) - mapproxy-seed 默认行为就是跳过存在的
-            # 注意: mapproxy-seed 没有 --reseed 参数，那是 cleanup 用的。
-            # 我们使用默认模式，它会计算瓦片，如果文件存在且比 refresh_before 新，则跳过。
             
             cmd = [
                 self.seed_cmd,
                 '-f', self.mapproxy_conf,
                 '-s', self.seed_conf,
-                '--concurrency', str(self.seed_concurrency),
-                '--quiet'
+                '--concurrency', str(self.seed_concurrency)
             ]
             
             # 使用 Popen 以便实时获取输出或后台运行
@@ -202,42 +354,67 @@ class SeedManager:
                 startupinfo.wShowWindow = 0 # SW_HIDE
                 creationflags = subprocess.CREATE_NO_WINDOW
 
-            attempt = 0
+            # Prepare environment to force unbuffered output
+            env = os.environ.copy()
+            env['PYTHONUNBUFFERED'] = '1'
+
+            monitor = ProgressMonitor(callback=self.progress_callback, progress_queue=self.progress_queue)
+            
+            # 使用 Popen 替代 run 以便更好地控制窗口
+            process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT, 
+                text=True,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+                bufsize=1,
+                env=env
+            )
+            
+            logger.info("Seed 进程已启动，开始监听输出...")
+            
             while True:
-                # 使用 Popen 替代 run 以便更好地控制窗口
-                process = subprocess.Popen(
-                    cmd, 
-                    stdout=subprocess.PIPE, 
-                    stderr=subprocess.PIPE, 
-                    text=True,
-                    startupinfo=startupinfo,
-                    creationflags=creationflags
-                )
-                stdout, stderr = process.communicate()
-                
-                if process.returncode == 0:
-                    logger.info("Seed 任务完成。")
-                    status['last_success'] = datetime.now().isoformat()
-                    status['status'] = 'completed'
-                    status['message'] = "All tasks finished successfully."
-                    if current_hash:
-                        status['seed_hash'] = current_hash
+                line = process.stdout.readline()
+                if not line:
                     break
-                
-                logger.error(f"Seed 任务失败: {stderr}")
+                line = line.strip()
+                if line:
+                    # Strip ANSI color codes just in case
+                    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+                    clean_line = ansi_escape.sub('', line)
+                    
+                    parsed = monitor.parse_line(clean_line)
+                    if not parsed:
+                        # Log unparsed lines to debug why we are missing them, but avoid spamming too much
+                        # Only log if it looks like progress but failed, or is an error
+                        if "error" in clean_line.lower() or "exception" in clean_line.lower():
+                            logger.error(f"Seed Output (Error): {clean_line}")
+                        elif "%" in clean_line or "tiles/s" in clean_line:
+                            logger.warning(f"Seed Output (Unparsed Progress): {clean_line}")
+                        else:
+                            # Log other info at debug level
+                            logger.debug(f"Seed Output: {clean_line}")
+            
+            process.wait()
+            
+            if process.returncode == 0:
+                logger.info("Seed 任务完成。")
+                monitor.finish()
+                status['last_success'] = datetime.now().isoformat()
+                status['status'] = 'completed'
+                status['message'] = "All tasks finished successfully."
+                if current_hash:
+                    status['seed_hash'] = current_hash
+            else:
+                logger.error(f"Seed 任务失败，返回码: {process.returncode}")
                 status['status'] = 'failed'
-                status['error'] = stderr
-                if attempt >= self.seed_max_retries:
-                    self.send_alert(f"Seed 任务在重试 {self.seed_max_retries} 次后仍然失败。最后一次错误: {stderr}")
-                    break
-                attempt += 1
-                if self.seed_retry_backoff > 0:
-                    time.sleep(self.seed_retry_backoff)
+                status['error'] = f"Process exited with code {process.returncode}"
                 
-        except Exception:
+        except Exception as e:
             logger.exception("Seed 执行异常")
             status['status'] = 'error'
-            status['error'] = "Seed 执行异常"
+            status['error'] = str(e)
         finally:
             status['last_run_end'] = datetime.now().isoformat()
             self.save_status(status)
