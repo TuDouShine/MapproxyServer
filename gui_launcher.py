@@ -9,6 +9,7 @@ import shutil
 import webbrowser
 import logging
 import json # Used for error handling/logging if needed, though ConfigManager handles file IO
+import re
 from datetime import datetime
 try:
     import main
@@ -113,8 +114,10 @@ class LauncherApp:
         # Log Enhancement Variables
         self.log_auto_scroll = tk.BooleanVar(value=True)
         self.log_level_var = tk.StringVar(value="INFO") # DEBUG, INFO, WARN, ERROR
-        self.log_buffer = [] # Store (level, message) tuples
+        self.system_log_buffer = [] # Store (level, message) tuples
+        self.seed_log_buffer = [] # Store (level, message) tuples
         self.max_log_buffer = 5000
+        self.show_seed_in_system_var = tk.BooleanVar(value=False)
         
         # Config Manager
         self.config_mgr = ConfigManager(get_work_dir(), get_base_dir())
@@ -145,8 +148,8 @@ class LauncherApp:
         self.load_layers()
         
         # 绑定快捷键
-        self.root.bind('<Control-l>', lambda e: self.text_log.see("end"))
-        self.root.bind('<Control-L>', lambda e: self.text_log.see("end"))
+        self.root.bind('<Control-l>', lambda e: self.get_current_log_widget().see("end"))
+        self.root.bind('<Control-L>', lambda e: self.get_current_log_widget().see("end"))
         
         # 启动日志更新定时器
         self.root.after(100, self.update_logs)
@@ -318,11 +321,6 @@ class LauncherApp:
         # sticky="nsew" ensures it fills the expanded row
         frame_log.grid(row=4, column=0, sticky="nsew") 
         
-        # Ensure frame_log expands to fill its grid cell
-        # But wait, frame_log is a TLabelframe. It needs to manage its children too.
-        # It uses pack for children.
-        # We need to ensure the ScrolledText fills frame_log.
-        
         # Log Toolbar
         log_toolbar = ttk.Frame(frame_log)
         log_toolbar.pack(fill=tk.X, pady=(0, 5))
@@ -334,18 +332,42 @@ class LauncherApp:
         
         ttk.Checkbutton(log_toolbar, text="自动滚动", variable=self.log_auto_scroll).pack(side=tk.LEFT, padx=15)
         
+        # Preference: Show seed logs in system tab
+        ttk.Checkbutton(log_toolbar, text="在主日志显示Seed信息", variable=self.show_seed_in_system_var).pack(side=tk.LEFT, padx=15)
+        
         ttk.Button(log_toolbar, text="导出日志", command=self.export_logs).pack(side=tk.RIGHT, padx=5)
         ttk.Button(log_toolbar, text="清空日志", command=self.clear_logs).pack(side=tk.RIGHT, padx=5)
         
-        self.text_log = scrolledtext.ScrolledText(frame_log, height=10, state="disabled", font=("Consolas", 9))
-        self.text_log.pack(fill=tk.BOTH, expand=True)
+        # Notebook for Tabs
+        self.notebook_log = ttk.Notebook(frame_log)
+        self.notebook_log.pack(fill=tk.BOTH, expand=True)
         
-        # Tags
-        self.text_log.tag_config("DEBUG", foreground="gray")
-        self.text_log.tag_config("INFO", foreground="black")
-        self.text_log.tag_config("WARN", foreground="orange")
-        self.text_log.tag_config("ERROR", foreground="red")
-        self.text_log.tag_config("SUCCESS", foreground="green")
+        # Tab 1: System Log
+        self.tab_system = ttk.Frame(self.notebook_log)
+        self.notebook_log.add(self.tab_system, text="系统日志")
+        
+        self.text_log_system = scrolledtext.ScrolledText(self.tab_system, height=10, state="disabled", font=("Consolas", 9))
+        self.text_log_system.pack(fill=tk.BOTH, expand=True)
+        self._configure_log_tags(self.text_log_system)
+        
+        # Tab 2: Seed Monitor
+        self.tab_seed = ttk.Frame(self.notebook_log)
+        self.notebook_log.add(self.tab_seed, text="Seed监控")
+        
+        self.text_log_seed = scrolledtext.ScrolledText(self.tab_seed, height=10, state="disabled", font=("Consolas", 9))
+        self.text_log_seed.pack(fill=tk.BOTH, expand=True)
+        self._configure_log_tags(self.text_log_seed)
+        
+        # Alias for backward compatibility
+        self.text_log = self.text_log_system
+
+    def _configure_log_tags(self, widget):
+        widget.tag_config("DEBUG", foreground="gray")
+        widget.tag_config("INFO", foreground="black")
+        widget.tag_config("WARN", foreground="orange")
+        widget.tag_config("ERROR", foreground="red")
+        widget.tag_config("SUCCESS", foreground="green")
+        widget.tag_config("SEED", foreground="blue")
 
     def on_canvas_configure(self, event):
         """Ensure inner frame matches canvas width and handles responsive layout"""
@@ -433,59 +455,155 @@ class LauncherApp:
         self.canvas_status.itemconfig(self.status_circle, fill=color, outline=color)
         self.service_url_var.set(url)
 
-    def refresh_log_view(self, event=None):
-        """Refilter logs based on level"""
-        self.text_log.config(state="normal")
-        self.text_log.delete(1.0, tk.END)
-        
-        min_level = self.log_level_var.get()
-        levels = {"DEBUG": 0, "INFO": 1, "WARN": 2, "ERROR": 3}
-        min_val = levels.get(min_level, 1)
-        
-        for level, msg in self.log_buffer:
-            msg_val = levels.get(level, 1)
-            if msg_val >= min_val:
-                self.text_log.insert("end", msg + "\n", level)
-                
-        if self.log_auto_scroll.get():
-            self.text_log.see("end")
-        self.text_log.config(state="disabled")
+    def get_current_log_widget(self):
+        try:
+            # Note: notebook index might be string or int depending on tk version/wrapper, 
+            # but index("current") returns int usually.
+            current_tab_index = self.notebook_log.index("current")
+            if current_tab_index == 1: # Index 1 is Seed Tab
+                return self.text_log_seed
+        except Exception:
+            pass
+        return self.text_log_system
 
-    def log(self, message, level="INFO"):
-        # Normalize level
-        level = level.upper()
-        if level not in ["DEBUG", "INFO", "WARN", "ERROR", "SUCCESS"]:
-            level = "INFO"
+    def is_seed_log(self, message):
+        # 1. Check for specific Seed modules
+        if "SeedManager" in message or "SeedOrchestrator" in message:
+            return True
             
-        # Add to buffer
-        self.log_buffer.append((level, message))
-        if len(self.log_buffer) > self.max_log_buffer:
-            self.log_buffer.pop(0)
+        # 2. Check for standard seed progress format (fallback)
+        # [15:20:00] 10.50% 100/1000 (15 tiles/s)
+        if "tiles/s)" in message and "%" in message:
+            return True
             
-        # Display if meets criteria
+        return False
+
+    def detect_log_level(self, message):
+        """Attempt to detect log level from message content"""
+        message_upper = message.upper()
+        if "ERROR" in message_upper or "CRITICAL" in message_upper or "EXCEPTION" in message_upper:
+            return "ERROR"
+        if "WARN" in message_upper:
+            return "WARN"
+        if "DEBUG" in message_upper:
+            return "DEBUG"
+        if "SUCCESS" in message_upper:
+            return "SUCCESS"
+        return "INFO"
+
+    def _write_to_log(self, widget, message, tag="INFO"):
+        widget.config(state="normal")
+        widget.insert("end", message + "\n", tag)
+        if self.log_auto_scroll.get():
+            widget.see("end")
+        widget.config(state="disabled")
+
+    def _check_and_write(self, widget, message, level):
+        """Generic filter and write function"""
         min_level = self.log_level_var.get()
-        levels_map = {"DEBUG": 0, "INFO": 1, "WARN": 2, "ERROR": 3}
+        # Map levels to integers
+        levels_map = {"DEBUG": 0, "INFO": 1, "WARN": 2, "WARNING": 2, "ERROR": 3, "CRITICAL": 3, "SEED": 1, "SUCCESS": 1}
         
-        # Map SUCCESS to INFO for filtering purposes, or treat as INFO
-        msg_val = levels_map.get(level if level != "SUCCESS" else "INFO", 1)
-        min_val = levels_map.get(min_level, 1)
+        # Determine numeric values
+        msg_val = levels_map.get(level.upper(), 1)
+        min_val = levels_map.get(min_level.upper(), 1)
         
         if msg_val >= min_val:
-            self.text_log.config(state="normal")
-            self.text_log.insert("end", message + "\n", level)
-            if self.log_auto_scroll.get():
-                self.text_log.see("end")
-            self.text_log.config(state="disabled")
+            self._write_to_log(widget, message, level)
+
+    def refresh_log_view(self, event=None):
+        """Refilter logs in all tabs based on level"""
+        min_level = self.log_level_var.get()
+        levels_map = {"DEBUG": 0, "INFO": 1, "WARN": 2, "WARNING": 2, "ERROR": 3, "CRITICAL": 3, "SEED": 1, "SUCCESS": 1}
+        min_val = levels_map.get(min_level.upper(), 1)
+        
+        # 1. Refresh System Log
+        self.text_log_system.config(state="normal")
+        self.text_log_system.delete(1.0, tk.END)
+        for level, msg in self.system_log_buffer:
+            msg_val = levels_map.get(level.upper(), 1)
+            if msg_val >= min_val:
+                self.text_log_system.insert("end", msg + "\n", level)
+        if self.log_auto_scroll.get():
+            self.text_log_system.see("end")
+        self.text_log_system.config(state="disabled")
+        
+        # 2. Refresh Seed Log
+        self.text_log_seed.config(state="normal")
+        self.text_log_seed.delete(1.0, tk.END)
+        for level, msg in self.seed_log_buffer:
+            msg_val = levels_map.get(level.upper(), 1)
+            if msg_val >= min_val:
+                self.text_log_seed.insert("end", msg + "\n", level)
+        if self.log_auto_scroll.get():
+            self.text_log_seed.see("end")
+        self.text_log_seed.config(state="disabled")
+
+    def log(self, message, level=None):
+        # Auto-detect level if not provided
+        if level is None:
+            level = self.detect_log_level(message)
+            
+        # Normalize level
+        level = level.upper()
+        if level == "WARNING": level = "WARN"
+            
+        is_seed = self.is_seed_log(message)
+        
+        # Determine tag for coloring
+        # For Seed logs, we prefer the actual level if it's WARN/ERROR, otherwise SEED/INFO
+        log_tag = level
+        if is_seed and level in ["INFO", "DEBUG"]:
+            log_tag = "SEED"
+        
+        # Add to appropriate buffer
+        if is_seed:
+            self.seed_log_buffer.append((log_tag, message))
+            if len(self.seed_log_buffer) > self.max_log_buffer:
+                self.seed_log_buffer.pop(0)
+        else:
+            self.system_log_buffer.append((level, message))
+            if len(self.system_log_buffer) > self.max_log_buffer:
+                self.system_log_buffer.pop(0)
+
+        # Routing Logic
+        if is_seed:
+            # To seed tab (filtered)
+            self._check_and_write(self.text_log_seed, message, log_tag)
+            
+            # Optionally to system tab (filtered)
+            if self.show_seed_in_system_var.get():
+                self._check_and_write(self.text_log_system, message, log_tag)
+        else:
+            # To system tab (filtered)
+            self._check_and_write(self.text_log_system, message, level)
+
+    def _check_and_write_system(self, message, level):
+        # Legacy support or alias to new generic method
+        self._check_and_write(self.text_log_system, message, level)
 
     def clear_logs(self):
-        if messagebox.askyesno("确认", "确定要清空日志吗？"):
-            self.log_buffer = []
-            self.text_log.config(state="normal")
-            self.text_log.delete(1.0, tk.END)
-            self.text_log.config(state="disabled")
+        if messagebox.askyesno("确认", "确定要清空当前显示的日志吗？"):
+            widget = self.get_current_log_widget()
+            
+            # Clear Widget
+            widget.config(state="normal")
+            widget.delete(1.0, tk.END)
+            widget.config(state="disabled")
+            
+            # Clear Buffer
+            if widget == self.text_log_seed:
+                self.seed_log_buffer = []
+            else:
+                self.system_log_buffer = []
 
     def export_logs(self):
         from tkinter import filedialog
+        
+        widget = self.get_current_log_widget()
+        is_seed_tab = (widget == self.text_log_seed)
+        buffer = self.seed_log_buffer if is_seed_tab else self.system_log_buffer
+        
         filename = filedialog.asksaveasfilename(
             defaultextension=".txt",
             filetypes=[("Text Files", "*.txt"), ("Log Files", "*.log"), ("All Files", "*.*")]
@@ -493,7 +611,7 @@ class LauncherApp:
         if filename:
             try:
                 with open(filename, 'w', encoding='utf-8') as f:
-                    for _, msg in self.log_buffer:
+                    for _, msg in buffer:
                         f.write(msg + "\n")
                 messagebox.showinfo("成功", "日志已导出")
             except Exception as e:

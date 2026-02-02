@@ -374,6 +374,8 @@ class SeedManager:
             
             logger.info("Seed 进程已启动，开始监听输出...")
             
+            current_seed_name = None
+            
             while True:
                 line = process.stdout.readline()
                 if not line:
@@ -384,17 +386,44 @@ class SeedManager:
                     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
                     clean_line = ansi_escape.sub('', line)
                     
+                    # Detect seed name change
+                    # Format typically: Seeding 'seed_name' with ...
+                    seed_match = re.search(r"Seeding '(.+?)'", clean_line)
+                    if seed_match:
+                        current_seed_name = seed_match.group(1)
+                    
+                    # Format log line with seed name
+                    log_line = clean_line
+                    if current_seed_name:
+                        # Check for timestamp pattern at start (e.g., [15:20:00])
+                        ts_match = re.match(r"^(\[.*?\])(.*)", clean_line)
+                        if ts_match:
+                            # Insert seed name after timestamp: [Time] SeedName ...
+                            timestamp_part = ts_match.group(1)
+                            rest_part = ts_match.group(2)
+                            log_line = f"{timestamp_part} {current_seed_name}{rest_part}"
+                        else:
+                            # Fallback to prefix if no timestamp
+                            log_line = f"[{current_seed_name}] {clean_line}"
+                    
                     parsed = monitor.parse_line(clean_line)
-                    if not parsed:
+                    if parsed:
+                        # Log the progress line so it appears in stdout (for GUI capture) and log file
+                        logger.info(log_line)
+                    elif not parsed:
                         # Log unparsed lines to debug why we are missing them, but avoid spamming too much
                         # Only log if it looks like progress but failed, or is an error
                         if "error" in clean_line.lower() or "exception" in clean_line.lower():
-                            logger.error(f"Seed Output (Error): {clean_line}")
+                            logger.error(log_line if current_seed_name else f"Seed Output (Error): {clean_line}")
                         elif "%" in clean_line or "tiles/s" in clean_line:
-                            logger.warning(f"Seed Output (Unparsed Progress): {clean_line}")
+                            logger.warning(log_line if current_seed_name else f"Seed Output (Unparsed Progress): {clean_line}")
                         else:
                             # Log other info at debug level
-                            logger.debug(f"Seed Output: {clean_line}")
+                            # Also log "Seeding ..." lines here as INFO or DEBUG to keep context
+                            if "Seeding" in clean_line:
+                                logger.info(log_line)
+                            else:
+                                logger.debug(log_line)
             
             process.wait()
             
