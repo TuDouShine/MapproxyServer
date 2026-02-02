@@ -188,8 +188,7 @@ class LauncherApp:
         main_frame.rowconfigure(0, weight=0) # Env
         main_frame.rowconfigure(1, weight=0) # Config
         main_frame.rowconfigure(2, weight=0) # Status
-        main_frame.rowconfigure(3, weight=0) # Layers
-        main_frame.rowconfigure(4, weight=1) # Log (Expandable)
+        main_frame.rowconfigure(3, weight=1) # Log & Monitor (Expandable)
 
         # 1. Python 环境 (Row 0) - Exclusive Row
         frame_env = ttk.LabelFrame(main_frame, text="运行环境", padding="10", style="Card.TLabelframe")
@@ -290,36 +289,10 @@ class LauncherApp:
         # 3.5 切片预生成监控 (Row 3) - REPLACED BY DIALOG
         # frame_seed removed.
 
-        # 4. 图层信息 (Row 3) - Shifted up
-        frame_layers = ttk.LabelFrame(main_frame, text="图层列表(-点击复制)", padding="10", style="Card.TLabelframe")
-        frame_layers.grid(row=3, column=0, sticky="nsew", pady=(0, 15))
-        
-        columns = ("name", "format", "title")
-        self.tree_layers = ttk.Treeview(frame_layers, columns=columns, show="headings", selectmode="none", height=4)
-        
-        self.tree_layers.heading("name", text="图层名称 (Name)")
-        self.tree_layers.heading("format", text="格式 (Format)")
-        self.tree_layers.heading("title", text="标题 (Title)")
-        
-        self.tree_layers.column("name", width=200, anchor=tk.CENTER)
-        self.tree_layers.column("format", width=100, anchor=tk.CENTER)
-        self.tree_layers.column("title", width=400, anchor=tk.CENTER)
-        
-        self.tree_layers.tag_configure("hover", background="#f5f5f5")
-        
-        scrollbar_layers = ttk.Scrollbar(frame_layers, orient=tk.VERTICAL, command=self.tree_layers.yview)
-        self.tree_layers.configure(yscroll=scrollbar_layers.set)
-        
-        self.tree_layers.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar_layers.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        self.tree_layers.bind("<Button-1>", self.on_layer_click)
-        self.tree_layers.bind("<Motion>", self.on_tree_hover)
-
-        # 5. 运行日志 (Row 4) - Shifted up
-        frame_log = ttk.LabelFrame(main_frame, text="运行日志", padding="10", style="Card.TLabelframe")
+        # 3. 运行日志&监控 (Row 3)
+        frame_log = ttk.LabelFrame(main_frame, text="运行日志&监控", padding="10", style="Card.TLabelframe")
         # sticky="nsew" ensures it fills the expanded row
-        frame_log.grid(row=4, column=0, sticky="nsew") 
+        frame_log.grid(row=3, column=0, sticky="nsew") 
         
         # Log Toolbar
         log_toolbar = ttk.Frame(frame_log)
@@ -357,6 +330,32 @@ class LauncherApp:
         self.text_log_seed = scrolledtext.ScrolledText(self.tab_seed, height=10, state="disabled", font=("Consolas", 9))
         self.text_log_seed.pack(fill=tk.BOTH, expand=True)
         self._configure_log_tags(self.text_log_seed)
+
+        # Tab 3: Layer List
+        self.tab_layers = ttk.Frame(self.notebook_log)
+        self.notebook_log.add(self.tab_layers, text="图层列表")
+        
+        columns = ("name", "format", "title")
+        self.tree_layers = ttk.Treeview(self.tab_layers, columns=columns, show="headings", selectmode="none", height=4)
+        
+        self.tree_layers.heading("name", text="图层名称 (Name)")
+        self.tree_layers.heading("format", text="格式 (Format)")
+        self.tree_layers.heading("title", text="标题 (Title)")
+        
+        self.tree_layers.column("name", width=200, anchor=tk.CENTER)
+        self.tree_layers.column("format", width=100, anchor=tk.CENTER)
+        self.tree_layers.column("title", width=400, anchor=tk.CENTER)
+        
+        self.tree_layers.tag_configure("hover", background="#f5f5f5")
+        
+        scrollbar_layers = ttk.Scrollbar(self.tab_layers, orient=tk.VERTICAL, command=self.tree_layers.yview)
+        self.tree_layers.configure(yscroll=scrollbar_layers.set)
+        
+        self.tree_layers.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar_layers.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.tree_layers.bind("<Button-1>", self.on_layer_click)
+        self.tree_layers.bind("<Motion>", self.on_tree_hover)
         
         # Alias for backward compatibility
         self.text_log = self.text_log_system
