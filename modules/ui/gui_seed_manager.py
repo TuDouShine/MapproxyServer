@@ -128,7 +128,7 @@ class SeedManagerDialog:
         # Title/Header (Optional, but dialog title is already set)
         
         # Progress Section
-        frame_seed = ttk.LabelFrame(main_frame, text="任务进度", padding="12")
+        frame_seed = ttk.LabelFrame(main_frame, text="任务进度", padding="16")
         frame_seed.pack(fill=tk.X, expand=True, pady=12)
         
         # Line 1: Progress Bar + Percentage

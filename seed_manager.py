@@ -183,7 +183,7 @@ class SeedManager:
         self._stop_writer = threading.Event()
         self._writer_thread = threading.Thread(target=self._status_writer_loop, daemon=True)
         self._writer_thread.start()
-        
+
         # 探测 mapproxy-seed 路径
         self.seed_cmd = "mapproxy-seed"
         

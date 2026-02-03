@@ -73,7 +73,7 @@ class AdvancedSettingsDialog:
         content_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         # Seed Concurrency
-        grp_seed = ttk.LabelFrame(content_frame, text="Seed 服务管理配置", padding="10")
+        grp_seed = ttk.LabelFrame(content_frame, text="Seed 服务管理配置", padding="16")
         grp_seed.pack(fill=tk.X, pady=5)
         
         ttk.Label(grp_seed, text="并发进程数 (1-16):").grid(row=0, column=0, sticky=tk.W, pady=5)
@@ -81,7 +81,7 @@ class AdvancedSettingsDialog:
         sp_conc.grid(row=0, column=1, padx=10, sticky=tk.W, pady=5)
         
         # Retry Policy
-        grp_retry = ttk.LabelFrame(content_frame, text="失败重试策略", padding="10")
+        grp_retry = ttk.LabelFrame(content_frame, text="失败重试策略", padding="16")
         grp_retry.pack(fill=tk.X, pady=5)
         
         ttk.Checkbutton(grp_retry, text="启用自动重试", variable=self.retry_enabled_var).grid(row=0, column=0, columnspan=2, sticky=tk.W)
@@ -93,7 +93,7 @@ class AdvancedSettingsDialog:
         ttk.Spinbox(grp_retry, from_=1, to=60, textvariable=self.retry_interval_var, width=10).grid(row=2, column=1, sticky=tk.W, padx=10)
         
         # Alert Policy
-        grp_alert = ttk.LabelFrame(content_frame, text="失败告警配置", padding="10")
+        grp_alert = ttk.LabelFrame(content_frame, text="失败告警配置", padding="16")
         grp_alert.pack(fill=tk.X, pady=5)
         
         ttk.Checkbutton(grp_alert, text="启用失败告警", variable=self.alert_enabled_var).grid(row=0, column=0, sticky=tk.W)

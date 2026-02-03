@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
+import tkinter.font as tkfont
 import sys
 import os
 import subprocess
@@ -12,6 +13,7 @@ import json # Used for error handling/logging if needed, though ConfigManager ha
 import re
 import time
 from pathlib import Path
+from typing import Callable, Optional
 from datetime import datetime
 try:
     import main
@@ -29,6 +31,397 @@ from config_manager import ConfigManager
 
 # 工作目录名称 (referenced from utils implicitly by get_work_dir, but we might need it for display or logic)
 LAUNCHER_DIR_NAME = "MapProxyLauncher"
+
+class SeedProgressCanvasView:
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        colors: dict[str, str],
+        get_fonts: Callable[[], dict[str, tuple]],
+        on_package: Callable[[str], None],
+        show_toast: Callable[[str], None],
+    ) -> None:
+        """用于“切片进度”页的高性能虚拟滚动卡片网格视图。"""
+        self._parent = parent
+        self._colors = colors
+        self._get_fonts = get_fonts
+        self._on_package = on_package
+        self._show_toast = show_toast
+
+        self._tasks: list[str] = []
+        self._progress: dict[str, tuple[int, int, int]] = {}
+        self._packaging: set[str] = set()
+
+        self._card_gap = 16
+        self._card_pad = 12
+        self._card_height = 112
+
+        self._rendered_indices: set[int] = set()
+        self._button_hitboxes: dict[str, tuple[int, int, int, int]] = {}
+        self._render_cache: dict[int, tuple] = {}
+
+        container = ttk.Frame(parent)
+        container.pack(fill=tk.BOTH, expand=True)
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+
+        self._canvas = tk.Canvas(container, borderwidth=0, highlightthickness=0)
+        self._scrollbar = ttk.Scrollbar(container, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
+
+        self._canvas.grid(row=0, column=0, sticky="nsew")
+        self._scrollbar.grid(row=0, column=1, sticky="ns")
+
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+        self._canvas.bind("<Button-1>", self._on_click)
+        self._canvas.bind("<MouseWheel>", self._on_mousewheel, add="+")
+        self._canvas.bind("<Enter>", lambda _e: self._canvas.focus_set(), add="+")
+
+    def set_state(
+        self,
+        *,
+        tasks: list[str],
+        progress: dict[str, tuple[int, int, int]],
+        packaging: set[str],
+    ) -> None:
+        """更新任务列表与进度数据，并触发重绘。"""
+        tasks_new = list(tasks)
+        if tasks_new != self._tasks:
+            try:
+                self._canvas.delete("seed_progress_item")
+            except Exception:
+                pass
+            self._rendered_indices.clear()
+            self._render_cache.clear()
+            self._button_hitboxes.clear()
+        self._tasks = tasks_new
+        self._progress = dict(progress)
+        self._packaging = set(packaging)
+        self._update_scroll_region()
+        self._render_visible()
+
+    def _get_columns(self, width: int) -> int:
+        """根据可用宽度计算列数（>=1200 三列，>=800 两列，否则一列）。"""
+        if width >= 1200:
+            return 3
+        if width >= 800:
+            return 2
+        return 1
+
+    def _update_scroll_region(self) -> None:
+        """根据任务数量与列数计算 scrollregion，保证滚动条正确。"""
+        try:
+            width = int(self._canvas.winfo_width() or 0)
+            height = int(self._canvas.winfo_height() or 0)
+        except Exception:
+            width = 0
+            height = 0
+
+        if width <= 0 or height <= 0:
+            self._canvas.configure(scrollregion=(0, 0, 0, 0))
+            return
+
+        cols = self._get_columns(width)
+        n = len(self._tasks)
+        rows = (n + cols - 1) // cols if n > 0 else 0
+        total_height = self._card_gap + rows * (self._card_height + self._card_gap)
+        total_width = max(0, width)
+        self._canvas.configure(scrollregion=(0, 0, total_width, max(total_height, height)))
+
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        """处理尺寸变化，更新列数布局与可视渲染。"""
+        try:
+            _ = int(event.width)
+        except Exception:
+            return
+        self._update_scroll_region()
+        self._render_visible()
+
+    def _on_mousewheel(self, event: tk.Event) -> None:
+        """Windows 下的鼠标滚轮滚动处理。"""
+        try:
+            delta = int(getattr(event, "delta", 0))
+        except Exception:
+            delta = 0
+        if delta == 0:
+            return
+        step = -1 if delta > 0 else 1
+        self._canvas.yview_scroll(step * 3, "units")
+        self._render_visible()
+
+    def _on_click(self, event: tk.Event) -> None:
+        """处理打包按钮点击（命中测试在 Canvas 坐标系中完成）。"""
+        try:
+            x = int(self._canvas.canvasx(event.x))
+            y = int(self._canvas.canvasy(event.y))
+        except Exception:
+            return
+
+        for task_name, (x1, y1, x2, y2) in self._button_hitboxes.items():
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                percent, _, _ = self._progress.get(task_name, (0, 0, 0))
+                if percent < 100:
+                    return
+                if task_name in self._packaging:
+                    self._show_toast("正在打包，请稍候…")
+                    return
+                self._on_package(task_name)
+                return
+
+    def _render_visible(self) -> None:
+        """仅渲染当前可视区域的卡片，避免 1000+ 任务时卡顿。"""
+        try:
+            width = int(self._canvas.winfo_width() or 0)
+            height = int(self._canvas.winfo_height() or 0)
+        except Exception:
+            return
+        if width <= 0 or height <= 0:
+            return
+
+        cols = self._get_columns(width)
+        n = len(self._tasks)
+        if n == 0:
+            self._canvas.delete("seed_progress_item")
+            self._rendered_indices.clear()
+            self._button_hitboxes.clear()
+            self._render_cache.clear()
+            return
+
+        row_h = self._card_height + self._card_gap
+        top_y = int(self._canvas.canvasy(0))
+        bottom_y = top_y + height
+        first_row = max(0, (top_y - self._card_gap) // row_h - 1)
+        last_row = max(0, (bottom_y - self._card_gap) // row_h + 1)
+
+        max_row = (n + cols - 1) // cols - 1
+        if last_row > max_row:
+            last_row = max_row
+
+        start_idx = first_row * cols
+        end_idx = min(n, (last_row + 1) * cols)
+        wanted = set(range(start_idx, end_idx))
+
+        for idx in list(self._rendered_indices):
+            if idx not in wanted:
+                self._canvas.delete(f"seedcard_{idx}")
+                self._rendered_indices.remove(idx)
+                self._render_cache.pop(idx, None)
+
+        prev_hitboxes = dict(self._button_hitboxes)
+        self._button_hitboxes.clear()
+
+        for idx in range(start_idx, end_idx):
+            task_name = self._tasks[idx]
+            percent, processed, total = self._progress.get(task_name, (0, 0, 0))
+            percent_i = max(0, min(100, int(percent)))
+            is_packaging = task_name in self._packaging
+            sig = (task_name, percent_i, int(processed), int(total), bool(is_packaging), int(cols), int(width))
+
+            if idx in self._rendered_indices and self._render_cache.get(idx) == sig:
+                if task_name in prev_hitboxes:
+                    self._button_hitboxes[task_name] = prev_hitboxes[task_name]
+                continue
+
+            self._canvas.delete(f"seedcard_{idx}")
+            self._draw_card(idx, width, cols)
+            self._rendered_indices.add(idx)
+            self._render_cache[idx] = sig
+
+    def _draw_card(self, idx: int, canvas_width: int, cols: int) -> None:
+        """绘制单个 seed 任务卡片（含进度条、百分比、计数与打包按钮）。"""
+        gap = self._card_gap
+        pad = self._card_pad
+        card_h = self._card_height
+
+        usable = max(1, canvas_width - gap * (cols + 1))
+        card_w = max(260, usable // cols)
+        grid_total_w = gap * (cols + 1) + card_w * cols
+        if grid_total_w > canvas_width:
+            card_w = max(220, (canvas_width - gap * (cols + 1)) // cols)
+
+        row = idx // cols
+        col = idx % cols
+        x0 = gap + col * (card_w + gap)
+        y0 = gap + row * (card_h + gap)
+        x1 = x0 + card_w
+        y1 = y0 + card_h
+
+        task_name = self._tasks[idx]
+        percent, processed, total = self._progress.get(task_name, (0, 0, 0))
+        percent = max(0, min(100, int(percent)))
+        is_done = percent >= 100
+        is_packaging = task_name in self._packaging
+
+        fonts = self._get_fonts() or {}
+        body_font_raw = fonts.get("body", ("Microsoft YaHei", -14, "normal"))
+        subtitle_font_raw = fonts.get("subtitle", ("Microsoft YaHei", -14, "bold"))
+        mono_font_raw = fonts.get("mono", ("Consolas", -16, "normal"))
+
+        def _with_px_size(font_tuple: tuple, px: int) -> tuple:
+            """将字体元组的字号固定为指定像素值（保持字体族与字重不变）。"""
+            try:
+                family = str(font_tuple[0])
+            except Exception:
+                family = "Microsoft YaHei"
+            try:
+                weight = str(font_tuple[2])
+            except Exception:
+                weight = "normal"
+            return (family, -abs(int(px)), weight)
+
+        body_font = _with_px_size(body_font_raw, 16)
+        subtitle_font = _with_px_size(subtitle_font_raw, 16)
+        mono_font = _with_px_size(mono_font_raw, 16)
+        percent_font = _with_px_size(subtitle_font_raw, 17)
+
+        border = self._colors.get("border", "#D6DAE1")
+        text = self._colors.get("text", "#111111")
+        muted = self._colors.get("muted", "#5B616E")
+        blue = self._colors.get("seed", "#1D4ED8")
+        green = self._colors.get("success", "#0B6B2E")
+
+        self._canvas.create_rectangle(
+            x0,
+            y0,
+            x1,
+            y1,
+            fill="white",
+            outline=border,
+            width=1,
+            tags=(f"seedcard_{idx}", "seed_progress_item"),
+        )
+
+        name_y = y0 + pad
+        name_x = x0 + pad
+        name_max_w = max(80, card_w - pad * 2)
+        name_text = self._ellipsize(task_name, body_font, name_max_w)
+        self._canvas.create_text(
+            name_x,
+            name_y,
+            anchor="nw",
+            text=name_text,
+            fill=text,
+            font=body_font,
+            tags=(f"seedcard_{idx}", "seed_progress_item"),
+        )
+
+        bar_h = 10
+        bar_y = name_y + 28
+        percent_str = f"{percent} %"
+        percent_w = tkfont.Font(font=percent_font).measure(percent_str)
+
+        bar_x0 = x0 + pad
+        bar_x1 = x1 - pad - percent_w - 10
+        if bar_x1 < bar_x0 + 40:
+            bar_x1 = bar_x0 + 40
+        bar_y0 = bar_y
+        bar_y1 = bar_y + bar_h
+
+        self._canvas.create_rectangle(
+            bar_x0,
+            bar_y0,
+            bar_x1,
+            bar_y1,
+            fill=self._colors.get("hover_bg", "#F5F7FA"),
+            outline=border,
+            width=1,
+            tags=(f"seedcard_{idx}", "seed_progress_item"),
+        )
+
+        fill_w = int((bar_x1 - bar_x0) * (percent / 100.0))
+        fill_color = green if is_done else blue
+        if fill_w > 0:
+            self._canvas.create_rectangle(
+                bar_x0,
+                bar_y0,
+                bar_x0 + fill_w,
+                bar_y1,
+                fill=fill_color,
+                outline="",
+                width=0,
+                tags=(f"seedcard_{idx}", "seed_progress_item"),
+            )
+
+        self._canvas.create_text(
+            x1 - pad,
+            bar_y0 - 3,
+            anchor="ne",
+            text=percent_str,
+            fill=text,
+            font=percent_font,
+            tags=(f"seedcard_{idx}", "seed_progress_item"),
+        )
+
+        btn_w = 84
+        btn_h = 28
+        btn_x2 = x1 - pad
+        btn_x1 = btn_x2 - btn_w
+        btn_y2 = y1 - pad
+        btn_y1 = btn_y2 - btn_h
+
+        btn_enabled = is_done and not is_packaging
+        btn_fill = blue if btn_enabled else self._colors.get("hover_bg", "#F5F7FA")
+        btn_text = "打包中" if is_packaging else "打包"
+        btn_fg = "white" if btn_enabled else muted
+
+        self._canvas.create_rectangle(
+            btn_x1,
+            btn_y1,
+            btn_x2,
+            btn_y2,
+            fill=btn_fill,
+            outline=border,
+            width=1,
+            tags=(f"seedcard_{idx}", "seed_progress_item"),
+        )
+        self._canvas.create_text(
+            (btn_x1 + btn_x2) // 2,
+            (btn_y1 + btn_y2) // 2,
+            anchor="center",
+            text=btn_text,
+            fill=btn_fg,
+            font=subtitle_font,
+            tags=(f"seedcard_{idx}", "seed_progress_item"),
+        )
+
+        count_str = f"已生成 {processed}/{total}"
+        count_w = tkfont.Font(font=mono_font).measure(count_str)
+        count_x_right = btn_x1 - 10
+        count_x = max(x0 + pad, count_x_right - count_w)
+        count_y = btn_y1 + (btn_h // 2)
+        self._canvas.create_text(
+            count_x,
+            count_y,
+            anchor="w",
+            text=count_str,
+            fill=muted,
+            font=mono_font,
+            tags=(f"seedcard_{idx}", "seed_progress_item"),
+        )
+
+        self._button_hitboxes[task_name] = (int(btn_x1), int(btn_y1), int(btn_x2), int(btn_y2))
+
+    def _ellipsize(self, text: str, font: tuple, max_width: int) -> str:
+        """将超长文本省略号截断，确保单行展示。"""
+        try:
+            f = tkfont.Font(font=font)
+        except Exception:
+            return text
+        if f.measure(text) <= max_width:
+            return text
+        ell = "…"
+        lo = 0
+        hi = len(text)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            candidate = text[:mid] + ell
+            if f.measure(candidate) <= max_width:
+                lo = mid + 1
+            else:
+                hi = mid
+        cut = max(0, lo - 1)
+        return text[:cut] + ell
 
 def deploy_resources():
     """将内嵌资源部署到工作目录"""
@@ -91,13 +484,27 @@ class LauncherApp:
         logging.basicConfig(level=logging.INFO)
         self.root = root
         self.root.title("MapProxy Server Launcher")
+        self._capture_layout_mode = "--capture-layout" in sys.argv
         
         # 1. 窗口尺寸调整与限制
-        # Default size optimized for 1080p/768p screens to avoid scrollbar initially
-        # Estimated height of fixed content ~500px + Min Log ~200px = 700px
-        # 1280x900 provides ample space.
-        self.root.geometry("1280x720")
-        self.root.minsize(960, 580)
+        try:
+            screen_w = int(self.root.winfo_screenwidth() or 0)
+            screen_h = int(self.root.winfo_screenheight() or 0)
+        except Exception:
+            screen_w = 0
+            screen_h = 0
+
+        target_w = 1256
+        target_h = 740
+        if screen_w > 0:
+            target_w = min(target_w, max(980, int(screen_w * 0.92)))
+            target_w = min(target_w, max(980, screen_w - 80))
+        if screen_h > 0:
+            target_h = min(target_h, max(640, int(screen_h * 0.92)))
+            target_h = min(target_h, max(640, screen_h - 80))
+
+        self.root.geometry(f"{target_w}x{target_h}")
+        self.root.minsize(960, 600)
         
         # 变量
         self.python_path_var = tk.StringVar()
@@ -120,6 +527,15 @@ class LauncherApp:
         self.seed_log_buffer = [] # Store (level, message) tuples
         self.max_log_buffer = 5000
         self.show_seed_in_system_var = tk.BooleanVar(value=False)
+
+        # Seed Progress Tab State
+        self._seed_status_path = os.path.join(get_work_dir(), "seed_status.json")
+        self._seed_seed_yaml_path = os.path.join(get_work_dir(), "mapproxy-seed.yaml")
+        self._seed_task_names: list[str] = []
+        self._seed_task_progress: dict[str, tuple[int, int, int]] = {}
+        self._seed_packaging: set[str] = set()
+        self._seed_progress_refresh_pending = False
+        self._seed_progress_yaml_mtime: Optional[float] = None
         
         # Config Manager
         self.config_mgr = ConfigManager(get_work_dir(), get_base_dir())
@@ -145,6 +561,17 @@ class LauncherApp:
             "toast_fg": "#FFFFFF",
         }
         self._ui_fonts = {}
+        self._log_text_default_height = 4
+        self._log_text_min_height = 3
+        self._log_min_visible_lines = 0
+        self._log_font_px_normal = 16
+        self._log_font_px_key = 18
+        self._log_font_px_alert = 14
+        self._log_font_min_px = -16
+        self._log_font_size_px: Optional[int] = None
+        self._log_notebook_height_ratio = 1.2
+        self._log_notebook_base_height_px: Optional[int] = None
+        self._did_initial_autosize = False
 
         try:
             self.root.update_idletasks()
@@ -154,16 +581,22 @@ class LauncherApp:
         self._configure_visual_styles(initial_width=max(1, int(self.root.winfo_width() or 1280)))
         
         self.create_widgets()
-        self.load_config()
-        self.scan_pythons()
-        self.load_layers()
+        self._reload_seed_tasks_from_yaml()
+        self._schedule_seed_progress_refresh()
+        if not self._capture_layout_mode:
+            self.load_config()
+            self.scan_pythons()
+            self.load_layers()
         
         # 绑定快捷键
-        self.root.bind('<Control-l>', lambda e: self.get_current_log_widget().see("end"))
-        self.root.bind('<Control-L>', lambda e: self.get_current_log_widget().see("end"))
+        if not self._capture_layout_mode:
+            self.root.bind('<Control-l>', lambda e: self.get_current_log_widget().see("end"))
+            self.root.bind('<Control-L>', lambda e: self.get_current_log_widget().see("end"))
         
         # 启动日志更新定时器
-        self.root.after(100, self.update_logs)
+        if not self._capture_layout_mode:
+            self.root.after(100, self.update_logs)
+            self.root.after(500, self._poll_seed_progress_sources)
         
         # 绑定关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -194,7 +627,7 @@ class LauncherApp:
         # Create Scrollable Canvas Container
         self.canvas = tk.Canvas(self.root, borderwidth=0, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
-        self.scrollable_frame = ttk.Frame(self.canvas, padding="8")
+        self.scrollable_frame = ttk.Frame(self.canvas, padding="16")
 
         self.scrollable_frame.bind(
             "<Configure>",
@@ -205,7 +638,7 @@ class LauncherApp:
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
         self.canvas.grid(row=0, column=0, sticky="nsew")
-        # Scrollbar will be managed dynamically
+        self.scrollbar.grid_remove()
         
         # Ensure inner frame width matches canvas width
         self.canvas.bind('<Configure>', self.on_canvas_configure)
@@ -220,8 +653,8 @@ class LauncherApp:
         main_frame.rowconfigure(3, weight=1) # Log & Monitor (Expandable)
 
         # 1. Python 环境 (Row 0) - Exclusive Row
-        frame_env = ttk.LabelFrame(main_frame, text="运行环境", padding="8", style="Card.TLabelframe")
-        frame_env.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        frame_env = ttk.LabelFrame(main_frame, text="运行环境", padding="16", style="Card.TLabelframe")
+        frame_env.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         
         ttk.Label(frame_env, text="Python 解释器:").pack(side=tk.LEFT)
         self.combo_python = ttk.Combobox(frame_env, textvariable=self.python_path_var, state="readonly")
@@ -230,13 +663,13 @@ class LauncherApp:
         self.btn_refresh.pack(side=tk.LEFT)
         
         # 2. 服务配置 & 核心控制 (Row 1) - Merged & Refactored
-        frame_config = ttk.LabelFrame(main_frame, text="服务配置与控制", padding="8", style="Card.TLabelframe")
-        frame_config.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        frame_config = ttk.LabelFrame(main_frame, text="服务配置与控制", padding="16", style="Card.TLabelframe")
+        frame_config.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         frame_config.columnconfigure(1, weight=1) # Allow expansion
         
         # Line 1: Basic Config (Port, Host, Save, Advanced)
         config_line = ttk.Frame(frame_config)
-        config_line.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        config_line.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 2))
         
         ttk.Label(config_line, text="端口:").pack(side=tk.LEFT, padx=(0, 8))
         self.entry_port = ttk.Entry(config_line, textvariable=self.port_var, width=8)
@@ -264,8 +697,8 @@ class LauncherApp:
         self.btn_seed.pack(side=tk.RIGHT, padx=(8, 0))
 
         # Line 2: Start/Stop Buttons (Compact Group)
-        control_line = ttk.Frame(frame_config)
-        control_line.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        control_line = ttk.Frame(frame_config, padding=(0, 16))
+        control_line.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 0))
         
         # Start/Stop buttons
         self.btn_start = ttk.Button(control_line, text="启动服务", command=self.start_service)
@@ -288,8 +721,8 @@ class LauncherApp:
         self.btn_dir.pack(side=tk.RIGHT)
 
         # 3. 运行状态模块 (Row 2) - Simplified
-        frame_status_card = ttk.LabelFrame(main_frame, text="运行状态", padding="8", style="Card.TLabelframe")
-        frame_status_card.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        frame_status_card = ttk.LabelFrame(main_frame, text="运行状态", padding="16", style="Card.TLabelframe")
+        frame_status_card.grid(row=2, column=0, sticky="ew", pady=(0, 4))
         
         # Status Header (Indicator + URL + Browser)
         status_header = ttk.Frame(frame_status_card)
@@ -319,13 +752,13 @@ class LauncherApp:
         # frame_seed removed.
 
         # 3. 运行日志&监控 (Row 3)
-        frame_log = ttk.LabelFrame(main_frame, text="运行日志&监控", padding="8", style="Card.TLabelframe")
+        frame_log = ttk.LabelFrame(main_frame, text="运行日志&监控", padding="16", style="Card.TLabelframe")
         # sticky="nsew" ensures it fills the expanded row
         frame_log.grid(row=3, column=0, sticky="nsew") 
         
         # Log Toolbar
         log_toolbar = ttk.Frame(frame_log)
-        log_toolbar.pack(fill=tk.X, pady=(0, 6))
+        log_toolbar.pack(fill=tk.X, pady=(0, 2))
         
         ttk.Label(log_toolbar, text="日志级别:").pack(side=tk.LEFT)
         combo_level = ttk.Combobox(log_toolbar, textvariable=self.log_level_var, values=["DEBUG", "INFO", "WARN", "ERROR"], state="readonly", width=8)
@@ -347,8 +780,34 @@ class LauncherApp:
         # Tab 1: System Log
         self.tab_system = ttk.Frame(self.notebook_log)
         self.notebook_log.add(self.tab_system, text="系统日志")
+
+        log_font = self._ui_fonts.get("log_mono", ("Consolas", -16, "normal"))
+        try:
+            font_family = str(log_font[0])
+            font_size = int(log_font[1])
+            font_weight = str(log_font[2])
+        except Exception:
+            font_family = "Consolas"
+            font_size = -16
+            font_weight = "normal"
+
+        font_size = -abs(int(font_size))
+        if abs(font_size) < 16:
+            font_size = -16
+
+        self._log_font_px_normal = abs(int(font_size))
+        self._log_font_px_key = max(int(self._log_font_px_normal), 18)
+        self._log_font_px_alert = 14
+        log_font = (font_family, int(font_size), font_weight)
         
-        self.text_log_system = scrolledtext.ScrolledText(self.tab_system, height=5, state="disabled", font=("Consolas", -16), padx=8, pady=8)
+        self.text_log_system = scrolledtext.ScrolledText(
+            self.tab_system,
+            height=self._log_text_default_height,
+            state="disabled",
+            font=log_font,
+            padx=8,
+            pady=4,
+        )
         self.text_log_system.pack(fill=tk.BOTH, expand=True)
         self._configure_log_tags(self.text_log_system)
         
@@ -356,7 +815,14 @@ class LauncherApp:
         self.tab_seed = ttk.Frame(self.notebook_log)
         self.notebook_log.add(self.tab_seed, text="Seed监控")
         
-        self.text_log_seed = scrolledtext.ScrolledText(self.tab_seed, height=5, state="disabled", font=("Consolas", -16), padx=8, pady=8)
+        self.text_log_seed = scrolledtext.ScrolledText(
+            self.tab_seed,
+            height=self._log_text_default_height,
+            state="disabled",
+            font=log_font,
+            padx=8,
+            pady=4,
+        )
         self.text_log_seed.pack(fill=tk.BOTH, expand=True)
         self._configure_log_tags(self.text_log_seed)
 
@@ -365,7 +831,18 @@ class LauncherApp:
         self.notebook_log.add(self.tab_layers, text="图层列表")
         
         columns = ("name", "format", "title")
-        self.tree_layers = ttk.Treeview(self.tab_layers, columns=columns, show="headings", selectmode="none", height=2)
+        try:
+            style = ttk.Style()
+            body = self._ui_fonts.get("body", ("Microsoft YaHei", -16, "normal"))
+            subtitle = self._ui_fonts.get("subtitle", ("Microsoft YaHei", -16, "bold"))
+            body_16 = (str(body[0]), -abs(int(self._log_font_px_normal)), str(body[2]))
+            subtitle_16 = (str(subtitle[0]), -abs(int(self._log_font_px_normal)), str(subtitle[2]))
+            style.configure("Log.Treeview", font=body_16)
+            style.configure("Log.Treeview.Heading", font=subtitle_16)
+        except Exception:
+            pass
+
+        self.tree_layers = ttk.Treeview(self.tab_layers, columns=columns, show="headings", selectmode="none", height=2, style="Log.Treeview")
         
         self.tree_layers.heading("name", text="图层名称 (Name)")
         self.tree_layers.heading("format", text="格式 (Format)")
@@ -385,17 +862,306 @@ class LauncherApp:
         
         self.tree_layers.bind("<Button-1>", self.on_layer_click)
         self.tree_layers.bind("<Motion>", self.on_tree_hover)
+
+        # Tab 4: Seed Progress (Insert at end)
+        self.tab_seed_progress = ttk.Frame(self.notebook_log)
+        self.notebook_log.add(self.tab_seed_progress, text="切片进度")
+        self.seed_progress_view = SeedProgressCanvasView(
+            self.tab_seed_progress,
+            colors=self._ui_colors,
+            get_fonts=lambda: self._ui_fonts,
+            on_package=self._on_seed_progress_package_clicked,
+            show_toast=self.show_toast,
+        )
         
         # Alias for backward compatibility
         self.text_log = self.text_log_system
 
+        try:
+            self.root.after(0, self._ensure_log_min_visible_lines)
+        except Exception:
+            pass
+        try:
+            self.root.after(0, self._adjust_log_notebook_default_height)
+        except Exception:
+            pass
+
+    def _reload_seed_tasks_from_yaml(self) -> None:
+        """从 mapproxy-seed.yaml 加载 seed 任务列表并保持创建顺序。"""
+        try:
+            path = self._seed_seed_yaml_path
+            if not os.path.exists(path):
+                self._seed_task_names = []
+                return
+
+            try:
+                mtime = os.path.getmtime(path)
+            except Exception:
+                mtime = None
+
+            if mtime is not None and self._seed_progress_yaml_mtime is not None and mtime == self._seed_progress_yaml_mtime:
+                return
+
+            self._seed_progress_yaml_mtime = mtime
+
+            data = {}
+            yaml_mod = None
+            try:
+                import yaml as yaml_mod
+            except Exception:
+                yaml_mod = None
+
+            if yaml_mod is not None:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = yaml_mod.safe_load(f) or {}
+                seeds = data.get("seeds", {})
+                if isinstance(seeds, dict):
+                    self._seed_task_names = [str(k) for k in seeds.keys()]
+                else:
+                    self._seed_task_names = []
+            else:
+                names: list[str] = []
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                except Exception:
+                    lines = []
+
+                seeds_indent: Optional[int] = None
+                for raw in lines:
+                    line = raw.rstrip("\n")
+                    if not line.strip() or line.lstrip().startswith("#"):
+                        continue
+                    if seeds_indent is None:
+                        if re.match(r"^\s*seeds\s*:\s*$", line):
+                            seeds_indent = len(line) - len(line.lstrip())
+                        continue
+
+                    indent = len(line) - len(line.lstrip())
+                    if indent <= seeds_indent:
+                        break
+                    if indent != seeds_indent + 2:
+                        continue
+                    m = re.match(r"^\s*([^:#]+?)\s*:\s*$", line)
+                    if not m:
+                        continue
+                    key = m.group(1).strip().strip("'\"")
+                    if key:
+                        names.append(key)
+                self._seed_task_names = names
+        except Exception:
+            self._seed_task_names = []
+
+    def _schedule_seed_progress_refresh(self) -> None:
+        """合并频繁更新，避免日志高频写入导致重绘过于频繁。"""
+        if self._seed_progress_refresh_pending:
+            return
+        self._seed_progress_refresh_pending = True
+
+        def _do_refresh() -> None:
+            self._seed_progress_refresh_pending = False
+            try:
+                if hasattr(self, "seed_progress_view") and self.seed_progress_view:
+                    self.seed_progress_view.set_state(
+                        tasks=self._seed_task_names,
+                        progress=self._seed_task_progress,
+                        packaging=self._seed_packaging,
+                    )
+            except Exception:
+                pass
+
+        try:
+            self.root.after(120, _do_refresh)
+        except Exception:
+            self._seed_progress_refresh_pending = False
+
+    def _poll_seed_progress_sources(self) -> None:
+        """定时同步 seed 任务列表与总体完成状态（不影响其它Tab生命周期）。"""
+        try:
+            self._reload_seed_tasks_from_yaml()
+
+            status = {}
+            try:
+                if os.path.exists(self._seed_status_path):
+                    with open(self._seed_status_path, "r", encoding="utf-8") as f:
+                        status = json.load(f) if f else {}
+            except Exception:
+                status = {}
+
+            state = str(status.get("status", "") or "").lower()
+            if state in {"completed", "finished"}:
+                for name in self._seed_task_names:
+                    pct, processed, total = self._seed_task_progress.get(name, (0, 0, 0))
+                    if total > 0 and processed < total:
+                        processed = total
+                    self._seed_task_progress[name] = (100, int(processed), int(total))
+        except Exception:
+            pass
+        finally:
+            self._schedule_seed_progress_refresh()
+            try:
+                self.root.after(1000, self._poll_seed_progress_sources)
+            except Exception:
+                pass
+
+    def _try_update_seed_task_progress_from_log(self, message: str) -> bool:
+        """从 seed 日志中解析进度并更新对应任务卡片数据。"""
+        try:
+            msg = str(message or "")
+            if "%" not in msg or "/" not in msg:
+                return False
+
+            task = ""
+            task_match = re.search(r"\[(?P<task>[A-Za-z0-9_]+)\]", msg)
+            if task_match:
+                task = str(task_match.group("task"))
+            if not task:
+                task_match2 = re.search(r"\[[0-9]{1,2}:[0-9]{2}:[0-9]{2}\]\s+(?P<task>[A-Za-z0-9_]+)\b", msg)
+                if task_match2:
+                    task = str(task_match2.group("task"))
+            if not task:
+                return False
+
+            prog_match = re.search(
+                r"(?P<pct>[0-9]+(?:\.[0-9]+)?)%\s+(?P<processed>[0-9]+)\s*/\s*(?P<total>[0-9]+)",
+                msg,
+            )
+            if not prog_match:
+                return False
+
+            pct_f = float(prog_match.group("pct"))
+            processed = int(prog_match.group("processed"))
+            total = int(prog_match.group("total"))
+
+            if total > 0 and processed >= total:
+                pct_i = 100
+                processed = total
+            else:
+                pct_i = int(pct_f)
+                if pct_i < 0:
+                    pct_i = 0
+                if pct_i > 100:
+                    pct_i = 100
+
+            old = self._seed_task_progress.get(task)
+            new = (pct_i, processed, total)
+            if old == new:
+                return False
+            self._seed_task_progress[task] = new
+            if task not in self._seed_task_names and task:
+                self._seed_task_names.append(task)
+            return True
+        except Exception:
+            return False
+
+    def _on_seed_progress_package_clicked(self, seed_name: str) -> None:
+        """处理“切片进度”卡片的打包按钮点击（异步 + toast）。"""
+        self._package_seed_output_async(seed_name)
+
+    def _package_seed_output_async(self, seed_name: str) -> None:
+        """将 cache_data 打包为 zip（通过 toast 提示 loading/success/error）。"""
+        seed_name_safe = re.sub(r"[^A-Za-z0-9_\\-]+", "_", str(seed_name))[:64] or "seed"
+        work_dir = get_work_dir()
+        cache_dir = os.path.join(work_dir, "cache_data")
+        output_dir = os.path.join(work_dir, "packaged_tiles")
+
+        if seed_name in self._seed_packaging:
+            self.show_toast("正在打包，请稍候…")
+            return
+
+        if not os.path.exists(cache_dir):
+            self.show_toast("打包失败：缓存目录不存在")
+            return
+
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception:
+            self.show_toast("打包失败：无法创建输出目录")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_base = os.path.join(output_dir, f"tiles_{seed_name_safe}_{timestamp}")
+
+        self._seed_packaging.add(seed_name)
+        self.show_toast("正在打包…")
+        self._schedule_seed_progress_refresh()
+
+        def _run() -> None:
+            try:
+                shutil.make_archive(zip_base, "zip", cache_dir)
+                zip_path = zip_base + ".zip"
+                self.root.after(0, lambda: self._on_package_done(seed_name, True, zip_path))
+            except Exception as e:
+                self.root.after(0, lambda: self._on_package_done(seed_name, False, str(e)))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_package_done(self, seed_name: str, success: bool, result: str) -> None:
+        """打包完成回调：更新状态并以 toast 提示结果。"""
+        try:
+            self._seed_packaging.discard(seed_name)
+            if success:
+                self.show_toast("打包成功")
+            else:
+                self.show_toast("打包失败")
+        except Exception:
+            pass
+        finally:
+            self._schedule_seed_progress_refresh()
+
     def _configure_log_tags(self, widget):
-        widget.tag_config("DEBUG", foreground=self._ui_colors["muted"])
-        widget.tag_config("INFO", foreground=self._ui_colors["text"])
-        widget.tag_config("WARN", foreground=self._ui_colors["warn"])
-        widget.tag_config("ERROR", foreground=self._ui_colors["error"])
-        widget.tag_config("SUCCESS", foreground=self._ui_colors["success"])
-        widget.tag_config("SEED", foreground=self._ui_colors["seed"])
+        """配置日志 Text/ScrolledText 的高亮样式（颜色与差异化字号）。"""
+        def _current_base_size() -> tuple[int, bool]:
+            """获取控件当前字体大小（返回正数）与是否为像素尺寸。"""
+            try:
+                f = widget.cget("font")
+            except Exception:
+                return (int(self._log_font_px_normal), False)
+
+            try:
+                if isinstance(f, tuple) and len(f) >= 2:
+                    size = int(f[1])
+                    return (abs(size), size < 0)
+                font_obj = tkfont.Font(font=f)
+                size = int(font_obj.cget("size"))
+                return (abs(size), size < 0)
+            except Exception:
+                return (int(self._log_font_px_normal), False)
+
+        def _font_with_size(size_abs: int, use_pixels: bool) -> tuple:
+            """从当前控件字体派生固定字号（保持字体族与字重不变）。"""
+            try:
+                f = widget.cget("font")
+            except Exception:
+                f = ("Consolas", 14, "normal")
+            family = "Consolas"
+            weight = "normal"
+            try:
+                if isinstance(f, tuple) and len(f) >= 3:
+                    family = str(f[0])
+                    weight = str(f[2])
+                else:
+                    font_obj = tkfont.Font(font=f)
+                    family = str(font_obj.cget("family"))
+                    weight = str(font_obj.cget("weight"))
+            except Exception:
+                pass
+            s = abs(int(size_abs))
+            return (family, -s if use_pixels else s, weight)
+
+        base_abs, base_is_px = _current_base_size()
+        base_px = int(base_abs)
+        key_delta = int(self._log_font_px_key) - int(self._log_font_px_normal)
+        alert_delta = int(self._log_font_px_alert) - int(self._log_font_px_normal)
+        key_px = max(1, base_px + key_delta)
+        alert_px = max(1, base_px + alert_delta)
+
+        widget.tag_config("DEBUG", foreground=self._ui_colors["muted"], font=_font_with_size(base_px, base_is_px))
+        widget.tag_config("INFO", foreground=self._ui_colors["text"], font=_font_with_size(base_px, base_is_px))
+        widget.tag_config("WARN", foreground=self._ui_colors["warn"], font=_font_with_size(alert_px, base_is_px))
+        widget.tag_config("ERROR", foreground=self._ui_colors["error"], font=_font_with_size(alert_px, base_is_px))
+        widget.tag_config("SUCCESS", foreground=self._ui_colors["success"], font=_font_with_size(key_px, base_is_px))
+        widget.tag_config("SEED", foreground=self._ui_colors["seed"], font=_font_with_size(key_px, base_is_px))
 
     def on_canvas_configure(self, event):
         """Ensure inner frame matches canvas width and handles responsive layout"""
@@ -403,51 +1169,270 @@ class LauncherApp:
         self.canvas.itemconfig(self.canvas_window, width=event.width)
         self.adapt_ui_size(event.width)
         
-        # 2. Dynamic Height & Scrollbar Management
-        # Calculate minimum required height for content
-        # Note: We need to force update to get accurate reqheight
-        self.scrollable_frame.update_idletasks() 
-        min_req_height = self.scrollable_frame.winfo_reqheight()
-        
-        # Logic:
-        # If window height (event.height) > min_req_height:
-        #   - Content fits comfortably.
-        #   - We expand the inner frame to fill the window height.
-        #   - This triggers the row with weight=1 (Log Frame) to expand.
-        #   - We hide the scrollbar.
-        # If window height < min_req_height:
-        #   - Content does not fit.
-        #   - We set inner frame height to natural reqheight (or let it be).
-        #   - We show the scrollbar.
-        
-        if event.height >= min_req_height:
-             self.canvas.itemconfig(self.canvas_window, height=event.height)
-             self.scrollbar.grid_remove()
-             # Update scrollregion to avoid scrolling behavior even if hidden
-             self.canvas.configure(scrollregion=(0, 0, event.width, event.height))
-        else:
-             # Reset height to auto (None doesn't work directly in itemconfig for window, 
-             # but setting it to reqheight works)
-             self.canvas.itemconfig(self.canvas_window, height=min_req_height)
-             
-             # Show scrollbar
-             self.scrollbar.grid(row=0, column=1, sticky="ns")
-             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self._adjust_internal_scroll_widgets(int(getattr(event, "height", 0) or 0))
+        self.canvas.itemconfig(self.canvas_window, height=event.height)
+        self.scrollbar.grid_remove()
+        self.canvas.configure(scrollregion=(0, 0, event.width, event.height))
 
-    def adapt_ui_size(self, width):
+    def _adjust_internal_scroll_widgets(self, available_height: int) -> None:
+        """在固定窗口高度下，通过调整内部控件请求尺寸，避免主界面出现外层滚动条或裁剪。"""
+        try:
+            avail = int(available_height or 0)
+        except Exception:
+            return
+        if avail <= 0:
+            return
+
+        try:
+            self.scrollable_frame.update_idletasks()
+            min_req_height = int(self.scrollable_frame.winfo_reqheight() or 0)
+        except Exception:
+            min_req_height = 0
+
+        if min_req_height <= 0:
+            return
+
+        tol = 8
+        try:
+            cur_h = int(self.text_log_system.cget("height") or self._log_text_default_height)
+        except Exception:
+            cur_h = self._log_text_default_height
+
+        target_h = max(self._log_text_min_height, min(self._log_text_default_height, cur_h))
+        loops = 0
+        while (min_req_height > (avail + tol)) and (target_h > self._log_text_min_height) and (loops < 8):
+            target_h -= 1
+            try:
+                self.text_log_system.configure(height=target_h)
+                self.text_log_seed.configure(height=target_h)
+            except Exception:
+                break
+            try:
+                self.scrollable_frame.update_idletasks()
+                min_req_height = int(self.scrollable_frame.winfo_reqheight() or 0)
+            except Exception:
+                break
+            loops += 1
+
+        loops = 0
+        while (min_req_height + tol * 2 < avail) and (target_h < self._log_text_default_height) and (loops < 8):
+            target_h += 1
+            try:
+                self.text_log_system.configure(height=target_h)
+                self.text_log_seed.configure(height=target_h)
+            except Exception:
+                break
+            try:
+                self.scrollable_frame.update_idletasks()
+                min_req_height = int(self.scrollable_frame.winfo_reqheight() or 0)
+            except Exception:
+                break
+            loops += 1
+
+        self._ensure_log_min_visible_lines()
+
+    def _ensure_log_min_visible_lines(self) -> None:
+        """确保日志区域在当前像素高度下可视行数不少于阈值，必要时降低日志字体像素大小。"""
+        def _visible_lines_for(w: tk.Widget) -> int:
+            """基于当前像素高度与字体行高，估算 Text/ScrolledText 可视行数。"""
+            try:
+                w.update_idletasks()
+                height_px = int(w.winfo_height() or 0)
+            except Exception:
+                return 0
+            if height_px <= 0:
+                return 0
+
+            try:
+                pad_y = int(w.cget("pady") or 0)
+            except Exception:
+                pad_y = 0
+
+            try:
+                font_obj = tkfont.Font(font=w.cget("font"))
+                line_px = int(font_obj.metrics("linespace") or 0)
+            except Exception:
+                line_px = 0
+            if line_px <= 0:
+                return 0
+
+            usable_px = max(0, height_px - pad_y * 2)
+            return max(0, usable_px // max(1, line_px))
+
+        try:
+            target_lines = int(getattr(self, "_log_min_visible_lines", 8) or 8)
+        except Exception:
+            target_lines = 8
+        if target_lines <= 0:
+            return
+
+        try:
+            widget = self.text_log_system
+            seed_widget = self.text_log_seed
+        except Exception:
+            return
+        try:
+            visible_lines = min(_visible_lines_for(widget), _visible_lines_for(seed_widget))
+        except Exception:
+            visible_lines = 0
+        if visible_lines >= target_lines:
+            return
+
+        try:
+            cur_font = widget.cget("font")
+            font_obj = tkfont.Font(font=widget.cget("font"))
+            if isinstance(cur_font, tuple) and len(cur_font) >= 2:
+                cur_size = int(cur_font[1])
+            else:
+                parsed_size: int | None = None
+                try:
+                    if isinstance(cur_font, str):
+                        m = re.search(r"(-?\d+)", cur_font)
+                        if m:
+                            parsed_size = int(m.group(1))
+                except Exception:
+                    parsed_size = None
+                if parsed_size is None:
+                    parsed_size = int(getattr(font_obj, "cget")("size"))
+                cur_size = int(parsed_size)
+        except Exception:
+            cur_size = -16
+        if cur_size > 0:
+            cur_size = -cur_size
+
+        self._log_font_size_px = cur_size
+
+        min_size = int(getattr(self, "_log_font_min_px", -12) or -12)
+        if min_size >= 0:
+            min_size = -12
+
+        new_size = int(cur_size)
+        guard = 0
+        while visible_lines < target_lines and new_size < min_size and guard < 24:
+            new_size += 1
+            guard += 1
+            try:
+                try:
+                    widget.configure(font=("Consolas", new_size, "normal"))
+                    seed_widget.configure(font=("Consolas", new_size, "normal"))
+                except Exception:
+                    font_obj = tkfont.Font(family="Consolas", size=new_size)
+                    widget.configure(font=font_obj)
+                    seed_widget.configure(font=font_obj)
+
+                try:
+                    self._configure_log_tags(widget)
+                    self._configure_log_tags(seed_widget)
+                except Exception:
+                    pass
+
+                visible_lines = min(_visible_lines_for(widget), _visible_lines_for(seed_widget))
+            except Exception:
+                break
+
+        self._log_font_size_px = int(new_size)
+
+    def _adjust_log_notebook_default_height(self) -> None:
+        """基于现有像素高度按比例上调日志 Notebook 默认高度，并触发一次窗口自适配。"""
+        try:
+            ratio = float(getattr(self, "_log_notebook_height_ratio", 1.0) or 1.0)
+        except Exception:
+            ratio = 1.0
+        ratio = max(1.0, min(1.25, ratio))
+
+        try:
+            self.notebook_log.update_idletasks()
+            cur_px = int(self.notebook_log.winfo_height() or 0)
+            if cur_px <= 0:
+                cur_px = int(self.notebook_log.winfo_reqheight() or 0)
+        except Exception:
+            return
+        if cur_px <= 0:
+            return
+
+        if self._log_notebook_base_height_px is None:
+            self._log_notebook_base_height_px = cur_px
+
+        base_px = int(self._log_notebook_base_height_px or cur_px)
+        target_px = max(120, int(base_px * ratio))
+
+        try:
+            self.notebook_log.configure(height=target_px)
+        except Exception:
+            return
+
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+        self._ensure_log_min_visible_lines()
+        self._ensure_window_height_for_content()
+
+    def _ensure_window_height_for_content(self) -> None:
+        """在首屏阶段，必要时增大窗口高度以避免外层滚动条出现。"""
+        if getattr(self, "_did_initial_autosize", False):
+            return
+        self._did_initial_autosize = True
+
+        try:
+            screen_h = int(self.root.winfo_screenheight() or 0)
+        except Exception:
+            screen_h = 0
+
+        try:
+            self.scrollable_frame.update_idletasks()
+            req_h = int(self.scrollable_frame.winfo_reqheight() or 0)
+        except Exception:
+            return
+        if req_h <= 0:
+            return
+
+        try:
+            cur_h = int(self.root.winfo_height() or 0)
+            cur_w = int(self.root.winfo_width() or 0)
+        except Exception:
+            return
+        if cur_h <= 0 or cur_w <= 0:
+            return
+
+        try:
+            current_scrollbar_visible = bool(self.scrollbar.winfo_ismapped())
+        except Exception:
+            current_scrollbar_visible = False
+
+        if not current_scrollbar_visible and req_h <= cur_h:
+            return
+
+        max_h = cur_h
+        if screen_h > 0:
+            max_h = max(cur_h, int(screen_h * 0.92))
+            max_h = min(max_h, max(200, screen_h - 120))
+
+        target_h = min(max_h, max(cur_h, req_h + 8))
+        if target_h <= cur_h:
+            return
+
+        try:
+            self.root.geometry(f"{cur_w}x{target_h}")
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+    def adapt_ui_size(self, width: int) -> None:
         """根据屏幕宽度自适应调整字体与组件样式（仅视觉参数）。"""
         style = ttk.Style()
 
         w = max(1, int(width))
         if w < 1600:
+            base_px = 14
+            title_px = 16
+        elif w < 2560:
             base_px = 16
             title_px = 18
-        elif w < 2560:
+        else:
             base_px = 18
             title_px = 20
-        else:
-            base_px = 20
-            title_px = 22
 
         base_font_size = -max(14, base_px)
         title_font_size = -max(18, title_px)
@@ -457,19 +1442,28 @@ class LauncherApp:
             mono_font_size = -16
         if mono_font_size < -18:
             mono_font_size = -18
+        log_mono_font_size = -16
 
         self._ui_fonts = {
             "body": ("Microsoft YaHei", base_font_size, "normal"),
             "subtitle": ("Microsoft YaHei", base_font_size, "bold"),
             "title": ("Microsoft YaHei", title_font_size, "bold"),
             "mono": ("Consolas", mono_font_size, "normal"),
+            "log_mono": ("Consolas", log_mono_font_size, "normal"),
         }
 
         style.configure(".", font=self._ui_fonts["body"])
         style.configure("TLabelframe.Label", font=self._ui_fonts["subtitle"])
         style.configure("Treeview.Heading", font=self._ui_fonts["subtitle"])
-        style.configure("TNotebook.Tab", font=self._ui_fonts["subtitle"], padding=(8, 8))
-        style.configure("TButton", font=self._ui_fonts["body"], padding=(8, 8))
+        tab_pad_y = 12
+        try:
+            tab_font = tkfont.Font(family=self._ui_fonts["subtitle"][0], size=int(self._ui_fonts["subtitle"][1]))
+            line_px = int(tab_font.metrics("linespace") or 0)
+            tab_pad_y = max(12, int((44 - line_px + 1) // 2))
+        except Exception:
+            tab_pad_y = 12
+        style.configure("TNotebook.Tab", font=self._ui_fonts["subtitle"], padding=(16, tab_pad_y))
+        style.configure("TButton", font=self._ui_fonts["body"], padding=(8, 6))
         style.configure("TCheckbutton", padding=(3, 3))
         style.configure("TRadiobutton", padding=(3, 3))
 
@@ -614,6 +1608,12 @@ class LauncherApp:
 
         # Routing Logic
         if is_seed:
+            try:
+                updated = self._try_update_seed_task_progress_from_log(message)
+                if updated:
+                    self._schedule_seed_progress_refresh()
+            except Exception:
+                pass
             # To seed tab (filtered)
             self._check_and_write(self.text_log_seed, message, log_tag)
             
@@ -1256,6 +2256,38 @@ def _capture_layout_artifacts(tag: str) -> int:
         print(f"Error: Pillow 未安装或不可用，无法截图: {e}")
         return 2
 
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
+    def _compute_text_visible_lines(widget: tk.Widget) -> int:
+        """基于当前像素高度与字体行高，估算 Text/ScrolledText 可视行数。"""
+        try:
+            widget.update_idletasks()
+            height_px = int(widget.winfo_height() or 0)
+        except Exception:
+            return 0
+        if height_px <= 0:
+            return 0
+
+        try:
+            pad_y = int(widget.cget("pady") or 0)
+        except Exception:
+            pad_y = 0
+
+        try:
+            font_obj = tkfont.Font(font=widget.cget("font"))
+            line_px = int(font_obj.metrics("linespace") or 0)
+        except Exception:
+            line_px = 0
+        if line_px <= 0:
+            return 0
+
+        usable_px = max(0, height_px - pad_y * 2)
+        return max(0, usable_px // max(1, line_px))
+
     output_dir = Path(get_base_dir()) / "artifacts" / "gui_layout" / tag
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1278,7 +2310,53 @@ def _capture_layout_artifacts(tag: str) -> int:
     ]
 
     captured_paths: list[Path] = []
+    captured_seed_paths: list[Path] = []
     try:
+        try:
+            if hasattr(app, "seed_progress_view") and getattr(app, "seed_progress_view", None):
+                dummy_tasks = [f"seed_{i:04d}" for i in range(12)]
+                dummy_progress: dict[str, tuple[int, int, int]] = {}
+                for i, name in enumerate(dummy_tasks):
+                    pct = (i * 9) % 101
+                    total = 1000
+                    processed = int(total * (pct / 100.0))
+                    if pct >= 100:
+                        pct = 100
+                        processed = total
+                    dummy_progress[name] = (int(pct), int(processed), int(total))
+                app.seed_progress_view.set_state(tasks=dummy_tasks, progress=dummy_progress, packaging=set())
+        except Exception:
+            pass
+
+        try:
+            if hasattr(app, "tree_layers") and getattr(app, "tree_layers", None):
+                app.tree_layers.delete(*app.tree_layers.get_children())
+                demo_rows = [
+                    ("world", "png", "世界底图 (demo)"),
+                    ("china", "jpeg", "中国范围 (demo)"),
+                    ("city", "webp", "城市级别 (demo)"),
+                ]
+                for r in demo_rows:
+                    try:
+                        app.tree_layers.insert("", "end", values=r)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        try:
+            if hasattr(app, "log"):
+                app.log("[12:00:00] DEBUG 调试信息示例", "DEBUG")
+                app.log("[12:00:01] INFO 普通信息示例", "INFO")
+                app.log("[12:00:02] SUCCESS 关键信息示例", "SUCCESS")
+                app.log("[12:00:03] WARN 警告信息示例", "WARN")
+                app.log("[12:00:04] ERROR 错误信息示例", "ERROR")
+                app.log("SeedManager [12:00:05] INFO Seed 进度信息示例", "INFO")
+                app.log("SeedManager [12:00:06] WARN Seed 警告示例", "WARN")
+                app.log("SeedManager [12:00:07] ERROR Seed 错误示例", "ERROR")
+        except Exception:
+            pass
+
         screen_w = int(root.winfo_screenwidth() or 0)
         screen_h = int(root.winfo_screenheight() or 0)
         for name, w, h in profiles:
@@ -1287,7 +2365,7 @@ def _capture_layout_artifacts(tag: str) -> int:
                 target_h = int(h)
                 if screen_w > 0 and screen_h > 0:
                     target_w = min(target_w, max(200, screen_w - 80))
-                    target_h = min(target_h, max(200, screen_h - 120))
+                    target_h = min(target_h, max(200, screen_h - 80))
 
                 root.geometry(f"{target_w}x{target_h}+120+80")
                 root.update_idletasks()
@@ -1295,14 +2373,54 @@ def _capture_layout_artifacts(tag: str) -> int:
                 time.sleep(0.25)
                 root.update()
 
-                x = int(root.winfo_rootx())
-                y = int(root.winfo_rooty())
-                ww = int(root.winfo_width())
-                hh = int(root.winfo_height())
-                if ww <= 0 or hh <= 0:
-                    raise RuntimeError(f"窗口尺寸异常: {ww}x{hh}")
+                try:
+                    app.notebook_log.select(app.tab_system)
+                    root.update_idletasks()
+                    root.update()
+                except Exception:
+                    pass
 
-                image = ImageGrab.grab(bbox=(x, y, x + ww, y + hh))
+                try:
+                    if hasattr(app, "_ensure_log_min_visible_lines"):
+                        app._ensure_log_min_visible_lines()
+                        root.update_idletasks()
+                        root.update()
+                except Exception:
+                    pass
+
+                try:
+                    tab_bbox = app.notebook_log.bbox(0)
+                    tab_h = int(tab_bbox[3]) if tab_bbox and len(tab_bbox) >= 4 else 0
+                    if tab_h and tab_h < 44:
+                        print(f"Warn: Tab 点击区域高度不足 44px: {tab_h}px ({name})")
+                except Exception:
+                    pass
+
+                try:
+                    visible_lines = _compute_text_visible_lines(app.text_log_system)
+                    if visible_lines < 6:
+                        try:
+                            h_px = int(app.text_log_system.winfo_height() or 0)
+                        except Exception:
+                            h_px = 0
+                        try:
+                            p_y = int(app.text_log_system.cget("pady") or 0)
+                        except Exception:
+                            p_y = 0
+                        try:
+                            f = app.text_log_system.cget("font")
+                            fo = tkfont.Font(font=f)
+                            l_px = int(fo.metrics("linespace") or 0)
+                        except Exception:
+                            f = ""
+                            l_px = 0
+                        print(
+                            f"Warn: 日志可视行数不足 6 行: {visible_lines} ({name}) "
+                            f"height={h_px}px pady={p_y}px line={l_px}px font={f}"
+                        )
+                except Exception:
+                    pass
+
                 scrollbar_visible = False
                 try:
                     scrollbar_visible = bool(app.scrollbar.winfo_ismapped())
@@ -1310,9 +2428,56 @@ def _capture_layout_artifacts(tag: str) -> int:
                     scrollbar_visible = False
 
                 suffix = "scrollbar_on" if scrollbar_visible else "scrollbar_off"
-                out_path = output_dir / f"{name}_{target_w}x{target_h}_{suffix}.png"
-                image.save(out_path)
-                captured_paths.append(out_path)
+
+                try:
+                    x = int(root.winfo_rootx())
+                    y = int(root.winfo_rooty())
+                    ww = int(root.winfo_width())
+                    hh = int(root.winfo_height())
+                    if ww <= 0 or hh <= 0:
+                        raise RuntimeError(f"窗口尺寸异常: {ww}x{hh}")
+
+                    def _snap(tab_widget: tk.Widget | None, file_key: str) -> Path | None:
+                        """切换到指定 tab 并截图。"""
+                        try:
+                            if tab_widget is not None:
+                                app.notebook_log.select(tab_widget)
+                                root.update_idletasks()
+                                root.update()
+                                time.sleep(0.15)
+                                root.update()
+                        except Exception:
+                            return None
+
+                        try:
+                            img = ImageGrab.grab(bbox=(x, y, x + ww, y + hh))
+                        except Exception:
+                            return None
+
+                        out = output_dir / f"{name}_{target_w}x{target_h}_{file_key}_{suffix}.png"
+                        try:
+                            img.save(out)
+                        except Exception:
+                            return None
+                        return out
+
+                    sys_path = _snap(getattr(app, "tab_system", None), "system")
+                    if sys_path:
+                        captured_paths.append(sys_path)
+
+                    seed_path = _snap(getattr(app, "tab_seed", None), "seed_monitor")
+                    if seed_path:
+                        captured_seed_paths.append(seed_path)
+
+                    layers_path = _snap(getattr(app, "tab_layers", None), "layers")
+                    if layers_path:
+                        captured_seed_paths.append(layers_path)
+
+                    prog_path = _snap(getattr(app, "tab_seed_progress", None), "seed_progress")
+                    if prog_path:
+                        captured_seed_paths.append(prog_path)
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"Warn: 生成截图失败 ({name}): {e}")
 
