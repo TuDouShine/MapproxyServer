@@ -65,7 +65,41 @@ class ConfigManager:
 
     def load_launcher_config(self):
         """Load GUI launcher config"""
-        config = load_json(self.config_json_path)
+        raw = load_json(self.config_json_path)
+        config = raw if isinstance(raw, dict) else {}
+
+        seed_settings = config.get("seed_settings")
+        if not isinstance(seed_settings, dict):
+            seed_settings = {}
+            config["seed_settings"] = seed_settings
+
+        defaults = self.get_default_advanced_config()
+        try:
+            adv = self.load_advanced_config()
+        except Exception:
+            self.logger.exception("读取高级设置失败，回退为默认值")
+            adv = defaults
+
+        seed_settings.setdefault("concurrency", adv.get("concurrency", defaults["concurrency"]))
+
+        retry_cfg = seed_settings.get("retry")
+        if not isinstance(retry_cfg, dict):
+            retry_cfg = {}
+            seed_settings["retry"] = retry_cfg
+        adv_retry = adv.get("retry", {})
+        default_retry = defaults["retry"]
+        retry_cfg.setdefault("enabled", bool(adv_retry.get("enabled", default_retry["enabled"])))
+        retry_cfg.setdefault("max_retries", int(adv_retry.get("max_retries", default_retry["max_retries"])))
+        retry_cfg.setdefault("interval", int(adv_retry.get("interval", default_retry["interval"])))
+
+        alert_cfg = seed_settings.get("alert")
+        if not isinstance(alert_cfg, dict):
+            alert_cfg = {}
+            seed_settings["alert"] = alert_cfg
+        adv_alert = adv.get("alert", {})
+        default_alert = defaults["alert"]
+        alert_cfg.setdefault("enabled", bool(adv_alert.get("enabled", default_alert["enabled"])))
+
         return config
 
     def get_default_advanced_config(self):

@@ -177,7 +177,7 @@ class SeedManager:
         self.status_file = os.path.join(project_root, 'seed_status.json')
         self.seed_concurrency = self._get_seed_concurrency()
         self.seed_max_retries, self.seed_retry_backoff = self._get_seed_retry_config()
-        self.alert_enabled = self._get_seed_alert_config()
+        self.alert_enabled, self.alert_threshold, self.alert_email = self._get_seed_alert_config()
         
         # Start status writer thread
         self._stop_writer = threading.Event()
@@ -293,7 +293,20 @@ class SeedManager:
 
     def _get_seed_alert_config(self):
         enabled = os.environ.get("MAPPROXY_SEED_ALERT_ENABLED", "false").lower() == "true"
-        return enabled
+
+        threshold_raw = os.environ.get("MAPPROXY_SEED_ALERT_THRESHOLD", "").strip()
+        threshold = 0
+        if threshold_raw:
+            try:
+                threshold = int(threshold_raw)
+            except ValueError:
+                logger.warning(f"Invalid MAPPROXY_SEED_ALERT_THRESHOLD: {threshold_raw}, using default 0")
+                threshold = 0
+        if threshold < 0:
+            threshold = 0
+
+        email = os.environ.get("MAPPROXY_SEED_ALERT_EMAIL", "").strip()
+        return enabled, threshold, email
 
     def send_alert(self, message):
         if not self.alert_enabled:

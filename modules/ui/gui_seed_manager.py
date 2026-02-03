@@ -122,21 +122,21 @@ class SeedManagerDialog:
             self.center_window_relative()
 
     def create_widgets(self):
-        main_frame = ttk.Frame(self.top, padding="20")
+        main_frame = ttk.Frame(self.top, padding="16")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Title/Header (Optional, but dialog title is already set)
         
         # Progress Section
-        frame_seed = ttk.LabelFrame(main_frame, text="任务进度", padding="10")
-        frame_seed.pack(fill=tk.X, expand=True, pady=10)
+        frame_seed = ttk.LabelFrame(main_frame, text="任务进度", padding="12")
+        frame_seed.pack(fill=tk.X, expand=True, pady=12)
         
         # Line 1: Progress Bar + Percentage
         line1 = ttk.Frame(frame_seed)
-        line1.pack(fill=tk.X, pady=(0, 10))
+        line1.pack(fill=tk.X, pady=(0, 12))
         
         self.seed_progress_bar = ttk.Progressbar(line1, orient="horizontal", mode="determinate", variable=self.seed_progress_var)
-        self.seed_progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.seed_progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
         
         ttk.Label(line1, textvariable=self.seed_percent_text_var, width=8).pack(side=tk.RIGHT)
         
@@ -149,19 +149,19 @@ class SeedManagerDialog:
         
         # Grid layout for stats
         ttk.Label(stats_frame, text="状态:").grid(row=0, column=0, sticky=tk.W)
-        ttk.Label(stats_frame, textvariable=self.seed_status_text_var, foreground="blue").grid(row=0, column=1, sticky=tk.W, padx=(5, 15))
+        ttk.Label(stats_frame, textvariable=self.seed_status_text_var, foreground="blue").grid(row=0, column=1, sticky=tk.W, padx=(8, 16))
         
         ttk.Label(stats_frame, text="速率:").grid(row=0, column=2, sticky=tk.W)
-        ttk.Label(stats_frame, textvariable=self.seed_rate_var).grid(row=0, column=3, sticky=tk.W, padx=(5, 15))
+        ttk.Label(stats_frame, textvariable=self.seed_rate_var).grid(row=0, column=3, sticky=tk.W, padx=(8, 16))
         
         ttk.Label(stats_frame, text="预计剩余:").grid(row=0, column=4, sticky=tk.W)
-        ttk.Label(stats_frame, textvariable=self.seed_eta_var).grid(row=0, column=5, sticky=tk.W, padx=(5, 15))
+        ttk.Label(stats_frame, textvariable=self.seed_eta_var).grid(row=0, column=5, sticky=tk.W, padx=(8, 16))
         
-        ttk.Label(stats_frame, textvariable=self.seed_info_var).grid(row=0, column=6, sticky=tk.W, padx=(5, 0))
+        ttk.Label(stats_frame, textvariable=self.seed_info_var).grid(row=0, column=6, sticky=tk.W, padx=(8, 0))
         
         # Actions Section
         action_frame = ttk.Frame(main_frame)
-        action_frame.pack(fill=tk.X, pady=10)
+        action_frame.pack(fill=tk.X, pady=12)
         
         self.btn_package = ttk.Button(action_frame, text="打包结果", command=self.package_seed_output, state="disabled")
         self.btn_package.pack(side=tk.RIGHT)

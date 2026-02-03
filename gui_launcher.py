@@ -10,6 +10,8 @@ import webbrowser
 import logging
 import json # Used for error handling/logging if needed, though ConfigManager handles file IO
 import re
+import time
+from pathlib import Path
 from datetime import datetime
 try:
     import main
@@ -94,8 +96,8 @@ class LauncherApp:
         # Default size optimized for 1080p/768p screens to avoid scrollbar initially
         # Estimated height of fixed content ~500px + Min Log ~200px = 700px
         # 1280x900 provides ample space.
-        self.root.geometry("1280x950")
-        self.root.minsize(320, 480)
+        self.root.geometry("1280x720")
+        self.root.minsize(960, 580)
         
         # 变量
         self.python_path_var = tk.StringVar()
@@ -130,17 +132,26 @@ class LauncherApp:
         # 部署资源
         deploy_resources()
 
-        # 配置样式
-        style = ttk.Style()
-        # 修复 Combobox 在 Windows 下的样式问题
-        style.map('TCombobox', 
-                  fieldbackground=[('readonly', 'white'), ('!disabled', 'white')],
-                  background=[('readonly', 'white'), ('!disabled', 'white')],
-                  selectbackground=[('readonly', 'white'), ('!disabled', 'white')],
-                  selectforeground=[('readonly', 'black'), ('!disabled', 'black')])
-        
-        # Card style
-        style.configure("Card.TLabelframe", relief="groove", borderwidth=2)
+        self._ui_colors = {
+            "text": "#111111",
+            "muted": "#5B616E",
+            "border": "#D6DAE1",
+            "hover_bg": "#F5F7FA",
+            "error": "#B00020",
+            "warn": "#8A4B00",
+            "success": "#0B6B2E",
+            "seed": "#1D4ED8",
+            "toast_bg": "#222222",
+            "toast_fg": "#FFFFFF",
+        }
+        self._ui_fonts = {}
+
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+        self._configure_visual_styles(initial_width=max(1, int(self.root.winfo_width() or 1280)))
         
         self.create_widgets()
         self.load_config()
@@ -157,6 +168,24 @@ class LauncherApp:
         # 绑定关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+    def _configure_visual_styles(self, initial_width: int) -> None:
+        """配置全局视觉样式（字体、间距、颜色映射），不改变现有业务逻辑。"""
+        style = ttk.Style()
+
+        try:
+            style.map(
+                "TCombobox",
+                fieldbackground=[("readonly", "white"), ("!disabled", "white")],
+                background=[("readonly", "white"), ("!disabled", "white")],
+                selectbackground=[("readonly", "white"), ("!disabled", "white")],
+                selectforeground=[("readonly", "black"), ("!disabled", "black")],
+            )
+        except Exception:
+            pass
+
+        style.configure("Card.TLabelframe", relief="groove", borderwidth=2)
+        self.adapt_ui_size(initial_width)
+
     def create_widgets(self):
         # Root layout configuration
         self.root.columnconfigure(0, weight=1)
@@ -165,7 +194,7 @@ class LauncherApp:
         # Create Scrollable Canvas Container
         self.canvas = tk.Canvas(self.root, borderwidth=0, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
-        self.scrollable_frame = ttk.Frame(self.canvas, padding="15")
+        self.scrollable_frame = ttk.Frame(self.canvas, padding="8")
 
         self.scrollable_frame.bind(
             "<Configure>",
@@ -191,59 +220,59 @@ class LauncherApp:
         main_frame.rowconfigure(3, weight=1) # Log & Monitor (Expandable)
 
         # 1. Python 环境 (Row 0) - Exclusive Row
-        frame_env = ttk.LabelFrame(main_frame, text="运行环境", padding="10", style="Card.TLabelframe")
-        frame_env.grid(row=0, column=0, sticky="ew", pady=(0, 15))
+        frame_env = ttk.LabelFrame(main_frame, text="运行环境", padding="8", style="Card.TLabelframe")
+        frame_env.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         
         ttk.Label(frame_env, text="Python 解释器:").pack(side=tk.LEFT)
         self.combo_python = ttk.Combobox(frame_env, textvariable=self.python_path_var, state="readonly")
-        self.combo_python.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        self.combo_python.pack(side=tk.LEFT, padx=(8, 8), fill=tk.X, expand=True)
         self.btn_refresh = ttk.Button(frame_env, text="刷新", command=self.scan_pythons)
         self.btn_refresh.pack(side=tk.LEFT)
         
         # 2. 服务配置 & 核心控制 (Row 1) - Merged & Refactored
-        frame_config = ttk.LabelFrame(main_frame, text="服务配置与控制", padding="10", style="Card.TLabelframe")
-        frame_config.grid(row=1, column=0, sticky="ew", pady=(0, 15))
+        frame_config = ttk.LabelFrame(main_frame, text="服务配置与控制", padding="8", style="Card.TLabelframe")
+        frame_config.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         frame_config.columnconfigure(1, weight=1) # Allow expansion
         
         # Line 1: Basic Config (Port, Host, Save, Advanced)
         config_line = ttk.Frame(frame_config)
-        config_line.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 15))
+        config_line.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         
-        ttk.Label(config_line, text="端口:").pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Label(config_line, text="端口:").pack(side=tk.LEFT, padx=(0, 8))
         self.entry_port = ttk.Entry(config_line, textvariable=self.port_var, width=8)
-        self.entry_port.pack(side=tk.LEFT, padx=5)
+        self.entry_port.pack(side=tk.LEFT, padx=(0, 12))
         self.entry_port.bind('<KeyRelease>', self.validate_port_input)
 
-        ttk.Label(config_line, text="线程:").pack(side=tk.LEFT, padx=(5, 5))
+        ttk.Label(config_line, text="线程:").pack(side=tk.LEFT, padx=(0, 8))
         self.entry_threads = ttk.Entry(config_line, textvariable=self.waitress_threads_var, width=8)
-        self.entry_threads.pack(side=tk.LEFT, padx=5)
+        self.entry_threads.pack(side=tk.LEFT, padx=(0, 12))
         self.entry_threads.bind('<KeyRelease>', self.validate_threads_input)
         
         self.chk_external = ttk.Checkbutton(config_line, text="允许外部访问", variable=self.allow_external_var, command=self.update_host_from_access)
-        self.chk_external.pack(side=tk.LEFT, padx=10)
+        self.chk_external.pack(side=tk.LEFT, padx=(0, 12))
         
-        self.lbl_host = ttk.Label(config_line, textvariable=self.host_var, foreground="gray")
-        self.lbl_host.pack(side=tk.LEFT, padx=5)
+        self.lbl_host = ttk.Label(config_line, textvariable=self.host_var, foreground=self._ui_colors["muted"])
+        self.lbl_host.pack(side=tk.LEFT, padx=(0, 12))
         
         self.btn_advanced = ttk.Button(config_line, text="高级设置", command=self.open_advanced_settings)
-        self.btn_advanced.pack(side=tk.RIGHT, padx=5)
+        self.btn_advanced.pack(side=tk.RIGHT, padx=(8, 0))
         
         self.btn_save = ttk.Button(config_line, text="保存配置", command=self.save_config)
-        self.btn_save.pack(side=tk.RIGHT, padx=5)
+        self.btn_save.pack(side=tk.RIGHT, padx=(8, 0))
         
         self.btn_seed = ttk.Button(config_line, text="切片预生成", command=lambda: show_seed_manager_dialog(self.root))
-        self.btn_seed.pack(side=tk.RIGHT, padx=5)
+        self.btn_seed.pack(side=tk.RIGHT, padx=(8, 0))
 
         # Line 2: Start/Stop Buttons (Compact Group)
         control_line = ttk.Frame(frame_config)
-        control_line.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 15))
+        control_line.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         
         # Start/Stop buttons
         self.btn_start = ttk.Button(control_line, text="启动服务", command=self.start_service)
-        self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
         
         self.btn_stop = ttk.Button(control_line, text="停止服务", command=self.stop_service, state="disabled")
-        self.btn_stop.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+        self.btn_stop.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
 
         # Line 3: Work Directory
         dir_line = ttk.Frame(frame_config)
@@ -252,15 +281,15 @@ class LauncherApp:
         ttk.Label(dir_line, text="工作目录:").pack(side=tk.LEFT)
         
         self.work_dir_var = tk.StringVar(value=get_work_dir())
-        entry_work_dir = ttk.Entry(dir_line, textvariable=self.work_dir_var, state="readonly", font=("Consolas", 9))
-        entry_work_dir.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+        entry_work_dir = ttk.Entry(dir_line, textvariable=self.work_dir_var, state="readonly", font=("Consolas", -16))
+        entry_work_dir.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
         
         self.btn_dir = ttk.Button(dir_line, text="打开目录", command=self.open_work_dir)
         self.btn_dir.pack(side=tk.RIGHT)
 
         # 3. 运行状态模块 (Row 2) - Simplified
-        frame_status_card = ttk.LabelFrame(main_frame, text="运行状态", padding="15", style="Card.TLabelframe")
-        frame_status_card.grid(row=2, column=0, sticky="ew", pady=(0, 15))
+        frame_status_card = ttk.LabelFrame(main_frame, text="运行状态", padding="8", style="Card.TLabelframe")
+        frame_status_card.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         
         # Status Header (Indicator + URL + Browser)
         status_header = ttk.Frame(frame_status_card)
@@ -271,45 +300,45 @@ class LauncherApp:
         self.canvas_status.pack(side=tk.LEFT, padx=(0, 5))
         self.status_circle = self.canvas_status.create_oval(2, 2, 18, 18, fill="gray", outline="gray")
         
-        self.lbl_status = ttk.Label(status_header, textvariable=self.status_var, font=("Microsoft YaHei", 12, "bold"), foreground="gray")
-        self.lbl_status.pack(side=tk.LEFT, padx=5)
+        self.lbl_status = ttk.Label(status_header, textvariable=self.status_var, font=("Microsoft YaHei", -16, "bold"), foreground=self._ui_colors["muted"])
+        self.lbl_status.pack(side=tk.LEFT, padx=(0, 8))
         
         # URL
         url_container = ttk.Frame(status_header)
-        url_container.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=20)
+        url_container.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
         ttk.Label(url_container, text="服务地址:").pack(side=tk.LEFT)
-        entry_url = ttk.Entry(url_container, textvariable=self.service_url_var, state="readonly", font=("Consolas", 10))
-        entry_url.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        entry_url = ttk.Entry(url_container, textvariable=self.service_url_var, state="readonly", font=("Consolas", -16))
+        entry_url.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
         ttk.Button(url_container, text="复制", command=self.copy_url).pack(side=tk.LEFT)
         
         # Browser Button (Quick Access)
         self.btn_browser = ttk.Button(status_header, text="在浏览器打开", command=self.open_browser)
-        self.btn_browser.pack(side=tk.RIGHT, padx=5)
+        self.btn_browser.pack(side=tk.RIGHT, padx=(8, 0))
 
         # 3.5 切片预生成监控 (Row 3) - REPLACED BY DIALOG
         # frame_seed removed.
 
         # 3. 运行日志&监控 (Row 3)
-        frame_log = ttk.LabelFrame(main_frame, text="运行日志&监控", padding="10", style="Card.TLabelframe")
+        frame_log = ttk.LabelFrame(main_frame, text="运行日志&监控", padding="8", style="Card.TLabelframe")
         # sticky="nsew" ensures it fills the expanded row
         frame_log.grid(row=3, column=0, sticky="nsew") 
         
         # Log Toolbar
         log_toolbar = ttk.Frame(frame_log)
-        log_toolbar.pack(fill=tk.X, pady=(0, 5))
+        log_toolbar.pack(fill=tk.X, pady=(0, 6))
         
         ttk.Label(log_toolbar, text="日志级别:").pack(side=tk.LEFT)
         combo_level = ttk.Combobox(log_toolbar, textvariable=self.log_level_var, values=["DEBUG", "INFO", "WARN", "ERROR"], state="readonly", width=8)
-        combo_level.pack(side=tk.LEFT, padx=5)
+        combo_level.pack(side=tk.LEFT, padx=(8, 12))
         combo_level.bind("<<ComboboxSelected>>", self.refresh_log_view)
         
-        ttk.Checkbutton(log_toolbar, text="自动滚动", variable=self.log_auto_scroll).pack(side=tk.LEFT, padx=15)
+        ttk.Checkbutton(log_toolbar, text="自动滚动", variable=self.log_auto_scroll).pack(side=tk.LEFT, padx=(0, 12))
         
         # Preference: Show seed logs in system tab
-        ttk.Checkbutton(log_toolbar, text="在主日志显示Seed信息", variable=self.show_seed_in_system_var).pack(side=tk.LEFT, padx=15)
+        ttk.Checkbutton(log_toolbar, text="在主日志显示Seed信息", variable=self.show_seed_in_system_var).pack(side=tk.LEFT, padx=(0, 12))
         
-        ttk.Button(log_toolbar, text="导出日志", command=self.export_logs).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(log_toolbar, text="清空日志", command=self.clear_logs).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(log_toolbar, text="导出日志", command=self.export_logs).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(log_toolbar, text="清空日志", command=self.clear_logs).pack(side=tk.RIGHT, padx=(8, 0))
         
         # Notebook for Tabs
         self.notebook_log = ttk.Notebook(frame_log)
@@ -319,7 +348,7 @@ class LauncherApp:
         self.tab_system = ttk.Frame(self.notebook_log)
         self.notebook_log.add(self.tab_system, text="系统日志")
         
-        self.text_log_system = scrolledtext.ScrolledText(self.tab_system, height=10, state="disabled", font=("Consolas", 9))
+        self.text_log_system = scrolledtext.ScrolledText(self.tab_system, height=5, state="disabled", font=("Consolas", -16), padx=8, pady=8)
         self.text_log_system.pack(fill=tk.BOTH, expand=True)
         self._configure_log_tags(self.text_log_system)
         
@@ -327,7 +356,7 @@ class LauncherApp:
         self.tab_seed = ttk.Frame(self.notebook_log)
         self.notebook_log.add(self.tab_seed, text="Seed监控")
         
-        self.text_log_seed = scrolledtext.ScrolledText(self.tab_seed, height=10, state="disabled", font=("Consolas", 9))
+        self.text_log_seed = scrolledtext.ScrolledText(self.tab_seed, height=5, state="disabled", font=("Consolas", -16), padx=8, pady=8)
         self.text_log_seed.pack(fill=tk.BOTH, expand=True)
         self._configure_log_tags(self.text_log_seed)
 
@@ -336,14 +365,14 @@ class LauncherApp:
         self.notebook_log.add(self.tab_layers, text="图层列表")
         
         columns = ("name", "format", "title")
-        self.tree_layers = ttk.Treeview(self.tab_layers, columns=columns, show="headings", selectmode="none", height=4)
+        self.tree_layers = ttk.Treeview(self.tab_layers, columns=columns, show="headings", selectmode="none", height=2)
         
         self.tree_layers.heading("name", text="图层名称 (Name)")
         self.tree_layers.heading("format", text="格式 (Format)")
         self.tree_layers.heading("title", text="标题 (Title)")
         
         self.tree_layers.column("name", width=200, anchor=tk.CENTER)
-        self.tree_layers.column("format", width=100, anchor=tk.CENTER)
+        self.tree_layers.column("format", width=104, anchor=tk.CENTER)
         self.tree_layers.column("title", width=400, anchor=tk.CENTER)
         
         self.tree_layers.tag_configure("hover", background="#f5f5f5")
@@ -361,12 +390,12 @@ class LauncherApp:
         self.text_log = self.text_log_system
 
     def _configure_log_tags(self, widget):
-        widget.tag_config("DEBUG", foreground="gray")
-        widget.tag_config("INFO", foreground="black")
-        widget.tag_config("WARN", foreground="orange")
-        widget.tag_config("ERROR", foreground="red")
-        widget.tag_config("SUCCESS", foreground="green")
-        widget.tag_config("SEED", foreground="blue")
+        widget.tag_config("DEBUG", foreground=self._ui_colors["muted"])
+        widget.tag_config("INFO", foreground=self._ui_colors["text"])
+        widget.tag_config("WARN", foreground=self._ui_colors["warn"])
+        widget.tag_config("ERROR", foreground=self._ui_colors["error"])
+        widget.tag_config("SUCCESS", foreground=self._ui_colors["success"])
+        widget.tag_config("SEED", foreground=self._ui_colors["seed"])
 
     def on_canvas_configure(self, event):
         """Ensure inner frame matches canvas width and handles responsive layout"""
@@ -406,47 +435,65 @@ class LauncherApp:
              self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def adapt_ui_size(self, width):
-        """根据屏幕宽度自适应调整字体和组件尺寸"""
+        """根据屏幕宽度自适应调整字体与组件样式（仅视觉参数）。"""
         style = ttk.Style()
-        
-        # Requirements:
-        # - Button Height ~32px (Managed by padding + font)
-        # - Font Size >= 14px (Tkinter negative value = pixels)
-        # - Padding: 8px horizontal, 4px vertical
-        
-        # Determine base font size based on requirements, but can still scale slightly for very small screens if needed?
-        # User said "Unified reduction... ensure font >= 14px".
-        # Let's use 14px as base.
-        
-        base_font_size = -14 # 14px
-        btn_pad = (8, 4) # (Horizontal, Vertical)
-        
-        # We can still have some responsiveness if needed, but user emphasized "Unified...".
-        # Let's stick to the requested spec as the "Standard", maybe slight adjust for mobile?
-        # User: "Ensure readability... no overflow".
-        
-        if width < 768: # Mobile
-             # Maybe slightly smaller if 14px is too big? 
-             # But user said "not less than 14px". So we stick to -14.
-             pass 
 
-        # Update styles
-        # Note: We use 'Microsoft YaHei' as consistent font
-        style.configure('.', font=('Microsoft YaHei', base_font_size))
-        
-        # TButton configuration
-        # width parameter in style is character width, which is not what we want for "min 80px".
-        # We can use "width" in the widget creation if needed, or rely on padding.
-        # But 'min width 80px' is hard to enforce strictly via style alone in ttk without a layout wrapper or fixed width.
-        # However, we can ensure enough padding.
-        # To strictly enforce min-width 80px, we might need to use a custom layout or ensure text + padding >= 80px.
-        # For now, we apply the requested padding.
-        
-        style.configure('TButton', font=('Microsoft YaHei', base_font_size), padding=btn_pad)
-        
-        style.configure('TLabelframe.Label', font=('Microsoft YaHei', base_font_size, 'bold'))
-        style.configure('Treeview.Heading', font=('Microsoft YaHei', base_font_size))
-        style.configure('Treeview', font=('Microsoft YaHei', base_font_size), rowheight=30) # Adjust row height for 14px font
+        w = max(1, int(width))
+        if w < 1600:
+            base_px = 16
+            title_px = 18
+        elif w < 2560:
+            base_px = 18
+            title_px = 20
+        else:
+            base_px = 20
+            title_px = 22
+
+        base_font_size = -max(14, base_px)
+        title_font_size = -max(18, title_px)
+
+        mono_font_size = base_font_size
+        if mono_font_size > -16:
+            mono_font_size = -16
+        if mono_font_size < -18:
+            mono_font_size = -18
+
+        self._ui_fonts = {
+            "body": ("Microsoft YaHei", base_font_size, "normal"),
+            "subtitle": ("Microsoft YaHei", base_font_size, "bold"),
+            "title": ("Microsoft YaHei", title_font_size, "bold"),
+            "mono": ("Consolas", mono_font_size, "normal"),
+        }
+
+        style.configure(".", font=self._ui_fonts["body"])
+        style.configure("TLabelframe.Label", font=self._ui_fonts["subtitle"])
+        style.configure("Treeview.Heading", font=self._ui_fonts["subtitle"])
+        style.configure("TNotebook.Tab", font=self._ui_fonts["subtitle"], padding=(8, 8))
+        style.configure("TButton", font=self._ui_fonts["body"], padding=(8, 8))
+        style.configure("TCheckbutton", padding=(3, 3))
+        style.configure("TRadiobutton", padding=(3, 3))
+
+        try:
+            style.configure("TEntry", padding=(8, 8))
+        except Exception:
+            pass
+
+        try:
+            style.map(
+                "TButton",
+                background=[
+                    ("active", self._ui_colors["hover_bg"]),
+                    ("!disabled", "white"),
+                ],
+                foreground=[
+                    ("disabled", self._ui_colors["muted"]),
+                    ("!disabled", self._ui_colors["text"]),
+                ],
+            )
+        except Exception:
+            pass
+
+        style.configure("Treeview", font=self._ui_fonts["body"], rowheight=36)
 
     def set_status(self, status, color, url=""):
         self.status_var.set(status)
@@ -756,8 +803,15 @@ class LauncherApp:
             toast.attributes("-topmost", True)
             
             # 简单的样式
-            label = tk.Label(toast, text=message, bg="#333333", fg="white", 
-                             padx=15, pady=8, font=("Microsoft YaHei", 9))
+            label = tk.Label(
+                toast,
+                text=message,
+                bg=self._ui_colors["toast_bg"],
+                fg=self._ui_colors["toast_fg"],
+                padx=16,
+                pady=16,
+                font=("Microsoft YaHei", -14),
+            )
             label.pack()
             
             # 居中显示在主窗口下方或中间
@@ -796,13 +850,13 @@ class LauncherApp:
         try:
             port = int(self.port_var.get())
             if 1 <= port <= 65535:
-                self.entry_port.config(foreground="black")
+                self.entry_port.config(foreground=self._ui_colors["text"])
                 self.btn_save.config(state="normal")
                 return True
             else:
                 raise ValueError
         except ValueError:
-            self.entry_port.config(foreground="red")
+            self.entry_port.config(foreground=self._ui_colors["error"])
             self.btn_save.config(state="disabled")
             return False
 
@@ -810,7 +864,7 @@ class LauncherApp:
         try:
             threads = int(self.waitress_threads_var.get())
             if 1 <= threads <= 32:
-                self.entry_threads.config(foreground="black")
+                self.entry_threads.config(foreground=self._ui_colors["text"])
                 # Also check port to ensure save button state is correct overall
                 if self.validate_port_input():
                     self.btn_save.config(state="normal")
@@ -818,7 +872,7 @@ class LauncherApp:
             else:
                 raise ValueError
         except ValueError:
-            self.entry_threads.config(foreground="red")
+            self.entry_threads.config(foreground=self._ui_colors["error"])
             self.btn_save.config(state="disabled")
             return False
 
@@ -1181,6 +1235,111 @@ class LauncherApp:
         else:
             messagebox.showerror("错误", "工作目录不存在")
 
+def _parse_cli_flag_value(argv: list[str], flag_name: str) -> str | None:
+    """从命令行参数中解析形如 `--flag value` 的 value。"""
+    try:
+        idx = argv.index(flag_name)
+    except ValueError:
+        return None
+    if idx + 1 >= len(argv):
+        return None
+    val = argv[idx + 1]
+    if val.startswith("--"):
+        return None
+    return val
+
+def _capture_layout_artifacts(tag: str) -> int:
+    """启动 GUI 并在多分辨率下截图与生成滚动条验证动图。"""
+    try:
+        from PIL import Image, ImageGrab
+    except Exception as e:
+        print(f"Error: Pillow 未安装或不可用，无法截图: {e}")
+        return 2
+
+    output_dir = Path(get_base_dir()) / "artifacts" / "gui_layout" / tag
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"Error: 无法创建产物目录 {output_dir}: {e}")
+        return 3
+
+    try:
+        root = tk.Tk()
+        app = LauncherApp(root)
+    except Exception as e:
+        print(f"Error: 无法启动 GUI 以生成产物: {e}")
+        return 4
+
+    profiles: list[tuple[str, int, int]] = [
+        ("default", 1280, 720),
+        ("1280x720", 1280, 720),
+        ("1366x768", 1366, 768),
+        ("1920x1080", 1920, 1080),
+    ]
+
+    captured_paths: list[Path] = []
+    try:
+        screen_w = int(root.winfo_screenwidth() or 0)
+        screen_h = int(root.winfo_screenheight() or 0)
+        for name, w, h in profiles:
+            try:
+                target_w = int(w)
+                target_h = int(h)
+                if screen_w > 0 and screen_h > 0:
+                    target_w = min(target_w, max(200, screen_w - 80))
+                    target_h = min(target_h, max(200, screen_h - 120))
+
+                root.geometry(f"{target_w}x{target_h}+120+80")
+                root.update_idletasks()
+                root.update()
+                time.sleep(0.25)
+                root.update()
+
+                x = int(root.winfo_rootx())
+                y = int(root.winfo_rooty())
+                ww = int(root.winfo_width())
+                hh = int(root.winfo_height())
+                if ww <= 0 or hh <= 0:
+                    raise RuntimeError(f"窗口尺寸异常: {ww}x{hh}")
+
+                image = ImageGrab.grab(bbox=(x, y, x + ww, y + hh))
+                scrollbar_visible = False
+                try:
+                    scrollbar_visible = bool(app.scrollbar.winfo_ismapped())
+                except Exception:
+                    scrollbar_visible = False
+
+                suffix = "scrollbar_on" if scrollbar_visible else "scrollbar_off"
+                out_path = output_dir / f"{name}_{target_w}x{target_h}_{suffix}.png"
+                image.save(out_path)
+                captured_paths.append(out_path)
+            except Exception as e:
+                print(f"Warn: 生成截图失败 ({name}): {e}")
+
+        if captured_paths:
+            frames: list[Image.Image] = []
+            for p in captured_paths:
+                try:
+                    frames.append(Image.open(p).convert("RGB"))
+                except Exception:
+                    continue
+            if frames:
+                gif_path = output_dir / "scrollbar_check.gif"
+                frames[0].save(
+                    gif_path,
+                    save_all=True,
+                    append_images=frames[1:],
+                    duration=900,
+                    loop=0,
+                )
+    finally:
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    return 0
+
 if __name__ == "__main__":
     # Check for service arguments to avoid launching GUI when running as service
     if "--service" in sys.argv:
@@ -1191,6 +1350,10 @@ if __name__ == "__main__":
         else:
             print("Error: main module not found.")
             sys.exit(1)
+
+    if "--capture-layout" in sys.argv:
+        tag = _parse_cli_flag_value(sys.argv, "--tag") or datetime.now().strftime("%Y%m%d_%H%M%S")
+        raise SystemExit(_capture_layout_artifacts(tag))
 
     try:
         # High DPI support
