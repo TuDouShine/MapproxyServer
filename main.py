@@ -20,9 +20,7 @@ class MapProxyServer:
         os.makedirs(self.work_dir, exist_ok=True)
         
         # 2. Setup Logging
-        # Use persistent base dir for logs to match seed.log location
-        base_dir = get_base_dir()
-        self.logs_dir = os.path.join(base_dir, "logs")
+        self.logs_dir = os.path.join(self.work_dir, "logs")
         os.makedirs(self.logs_dir, exist_ok=True)
         self.logger = setup_logging(os.path.join(self.logs_dir, "server.log"), "MapProxyServer")
         
@@ -81,9 +79,8 @@ class MapProxyServer:
             self.config_mgr = ConfigManager(self.work_dir, self.project_root)
             self.env_mgr = EnvManager(self.work_dir)
             self.seed_orch = SeedOrchestrator(self.work_dir)
-            # Update logging location - Keep logs in base_dir/logs as per requirement
-            # self.logs_dir = os.path.join(self.work_dir, "logs")
-            # self.logger = setup_logging(os.path.join(self.logs_dir, "server.log"), "MapProxyServer")
+            self.logs_dir = os.path.join(self.work_dir, "logs")
+            self.logger = setup_logging(os.path.join(self.logs_dir, "server.log"), "MapProxyServer")
 
         self.logger.info("MapProxy 服务发布程序启动...")
         

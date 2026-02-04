@@ -26,7 +26,7 @@ except ImportError:
 from python_detector import find_python_interpreters
 from modules.ui.gui_seed_manager import show_seed_manager_dialog
 from modules.ui.gui_advancedsetting_manager import show_advanced_settings_dialog
-from utils import get_base_dir, get_work_dir, is_port_in_use
+from utils import cleanup_empty_legacy_launcher_dir_in_cwd, get_base_dir, get_work_dir, is_port_in_use
 from config_manager import ConfigManager
 
 # 工作目录名称 (referenced from utils implicitly by get_work_dir, but we might need it for display or logic)
@@ -529,8 +529,7 @@ def deploy_resources():
         "main.py",
         "config.py",
         "seed_manager.py",
-        "mapproxy.yaml",
-        "mapproxy-seed.yaml",
+        "mapproxy_config",
         "requirements.txt",
         "utils.py",
         "env_manager.py",
@@ -546,20 +545,26 @@ def deploy_resources():
         dst = os.path.join(work_dir, filename)
         
         if os.path.exists(src):
+            if os.path.isdir(src):
+                if not os.path.exists(dst):
+                    try:
+                        shutil.copytree(src, dst)
+                        logging.info(f"Deploying directory: {filename}")
+                    except Exception:
+                        logging.exception(f"Failed to deploy directory: {filename}")
+                continue
+
             if filename.endswith(".yaml") or filename.endswith(".json") or filename == "requirements.txt" or filename == "config.py":
-                # 配置文件/数据文件：仅当不存在时复制，以免覆盖用户配置
-                # config.py 虽然是代码，但也包含用户可能修改的配置 (application entry)，所以小心覆盖
                 if not os.path.exists(dst):
                     try:
                         shutil.copy2(src, dst)
                         logging.info(f"Deploying config: {filename}")
-                    except Exception as e:
+                    except Exception:
                         logging.exception(f"Failed to deploy {filename}")
             else:
-                # 代码文件：始终覆盖，确保版本更新
                 try:
                     shutil.copy2(src, dst)
-                except Exception as e:
+                except Exception:
                     logging.exception(f"Failed to deploy {filename}")
 
 # AdvancedSettingsDialog class has been moved to modules/ui/gui_advancedsetting_manager.py
@@ -601,8 +606,7 @@ class LauncherApp:
         self.allow_external_var = tk.BooleanVar(value=False)
         self.service_process = None
         self.log_queue = queue.Queue()
-        # 将日志路径调整到项目根目录下的 logs 目录，与 seed.log 保持一致
-        self.server_log_path = os.path.join(get_base_dir(), "logs", "server.log")
+        self.server_log_path = os.path.join(get_work_dir(), "logs", "server.log")
         self.server_log_pos = 0
         self.current_host = "127.0.0.1"
         self.logger = logging.getLogger("Launcher")
@@ -617,7 +621,7 @@ class LauncherApp:
 
         # Seed Progress Tab State
         self._seed_status_path = os.path.join(get_work_dir(), "seed_status.json")
-        self._seed_seed_yaml_path = os.path.join(get_work_dir(), "mapproxy-seed.yaml")
+        self._seed_seed_yaml_path = os.path.join(get_work_dir(), "mapproxy_config", "mapproxy-seed.yaml")
         self._seed_task_names: list[str] = []
         self._seed_task_progress: dict[str, tuple[float, int, int]] = {}
         self._seed_task_status: dict[str, str] = {}
@@ -2765,6 +2769,7 @@ if __name__ == "__main__":
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
+    cleanup_empty_legacy_launcher_dir_in_cwd(LAUNCHER_DIR_NAME, "Launcher")
         
     try:
         root = tk.Tk()

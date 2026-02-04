@@ -14,8 +14,9 @@ class ConfigManager:
         # Config paths
         self.config_json_path = os.path.join(work_dir, "config.json")
         self.advanced_config_path = os.path.join(work_dir, "advanced_settings.json")
-        self.mapproxy_yaml_path = os.path.join(work_dir, "mapproxy.yaml")
-        self.seed_yaml_path = os.path.join(work_dir, "mapproxy-seed.yaml")
+        self.mapproxy_config_dir = os.path.join(work_dir, "mapproxy_config")
+        self.mapproxy_yaml_path = os.path.join(self.mapproxy_config_dir, "mapproxy.yaml")
+        self.seed_yaml_path = os.path.join(self.mapproxy_config_dir, "mapproxy-seed.yaml")
         
         # Locate schema
         self.config_schema_path = self._locate_schema()
@@ -48,20 +49,33 @@ class ConfigManager:
 
     def init_configs(self):
         """Initialize configuration files in work directory"""
-        files_to_copy = ["mapproxy.yaml", "mapproxy-seed.yaml", "config.py"]
-        for filename in files_to_copy:
-            src = os.path.join(self.project_root, filename)
-            dst = os.path.join(self.work_dir, filename)
-            
-            # If source exists, check if we need to copy
-            if os.path.exists(src):
-                # Don't overwrite existing configs unless they are missing
-                if not os.path.exists(dst):
-                    try:
-                        shutil.copy2(src, dst)
-                        self.logger.info(f"Initialized config: {filename}")
-                    except Exception:
-                        self.logger.exception(f"Failed to copy config: {filename}")
+        try:
+            os.makedirs(self.mapproxy_config_dir, exist_ok=True)
+        except Exception:
+            self.logger.exception("Failed to create mapproxy_config directory in work_dir")
+
+        config_src_dir = os.path.join(self.project_root, "mapproxy_config")
+        config_files = [
+            ("mapproxy.yaml", self.mapproxy_yaml_path),
+            ("mapproxy-seed.yaml", self.seed_yaml_path),
+        ]
+        for filename, dst in config_files:
+            src = os.path.join(config_src_dir, filename)
+            if os.path.exists(src) and not os.path.exists(dst):
+                try:
+                    shutil.copy2(src, dst)
+                    self.logger.info(f"Initialized config: {os.path.relpath(dst, self.work_dir)}")
+                except Exception:
+                    self.logger.exception(f"Failed to copy config: {filename}")
+
+        config_py_src = os.path.join(self.project_root, "config.py")
+        config_py_dst = os.path.join(self.work_dir, "config.py")
+        if os.path.exists(config_py_src) and not os.path.exists(config_py_dst):
+            try:
+                shutil.copy2(config_py_src, config_py_dst)
+                self.logger.info("Initialized config: config.py")
+            except Exception:
+                self.logger.exception("Failed to copy config: config.py")
 
     def load_launcher_config(self):
         """Load GUI launcher config"""

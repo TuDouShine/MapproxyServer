@@ -186,8 +186,8 @@ class SeedManager:
         self.project_root = project_root
         self.progress_callback = progress_callback
         self.progress_queue = queue.Queue()
-        self.mapproxy_conf = os.path.join(project_root, 'mapproxy.yaml')
-        self.seed_conf = os.path.join(project_root, 'mapproxy-seed.yaml')
+        self.mapproxy_conf = os.path.join(project_root, 'mapproxy_config', 'mapproxy.yaml')
+        self.seed_conf = os.path.join(project_root, 'mapproxy_config', 'mapproxy-seed.yaml')
         self.status_file = os.path.join(project_root, 'seed_status.json')
         self.seed_concurrency = self._get_seed_concurrency()
         self.seed_max_retries, self.seed_retry_backoff = self._get_seed_retry_config()

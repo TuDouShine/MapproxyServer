@@ -3,7 +3,7 @@ import os
 from mapproxy.wsgiapp import make_wsgi_app
 
 # 配置文件路径
-mapproxy_conf = os.path.join(os.path.dirname(__file__), 'mapproxy.yaml')
+mapproxy_conf = os.path.join(os.path.dirname(__file__), 'mapproxy_config', 'mapproxy.yaml')
 
 # 创建 MapProxy WSGI 应用
 application = make_wsgi_app(mapproxy_conf)

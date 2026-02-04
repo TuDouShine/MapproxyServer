@@ -4,6 +4,7 @@ import socket
 import logging
 import hashlib
 import json
+import shutil
 
 # Constants
 LAUNCHER_DIR_NAME = "MapProxyLauncher"
@@ -17,10 +18,38 @@ def get_base_dir():
         # 如果是脚本运行，基准目录是脚本所在目录
         return os.path.dirname(os.path.abspath(__file__))
 
+def get_user_data_dir(app_dir_name: str = LAUNCHER_DIR_NAME) -> str:
+    """获取用户数据目录（优先使用 Windows 的 LocalAppData/AppData）。"""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if not base:
+        base = os.path.expanduser("~")
+    return os.path.join(base, app_dir_name)
+
+def cleanup_empty_legacy_launcher_dir_in_cwd(app_dir_name: str = LAUNCHER_DIR_NAME, logger_name: str = "Launcher") -> None:
+    """清理当前工作目录下遗留的空工作目录（避免打包程序污染运行目录）。"""
+    logger = logging.getLogger(logger_name)
+    try:
+        legacy_path = os.path.join(os.getcwd(), app_dir_name)
+        if not os.path.isdir(legacy_path):
+            return
+        try:
+            entries = os.listdir(legacy_path)
+        except Exception:
+            entries = []
+        if entries:
+            return
+        shutil.rmtree(legacy_path, ignore_errors=True)
+        logger.info(f"已删除运行目录下的空文件夹: {legacy_path}")
+    except Exception:
+        logger.exception("清理遗留空目录失败")
+
 def get_work_dir(base_dir=None):
     """获取工作目录（数据存储目录）"""
     if base_dir is None:
         base_dir = get_base_dir()
+    base_dir = os.path.abspath(str(base_dir))
+    if os.path.basename(base_dir) == LAUNCHER_DIR_NAME:
+        return base_dir
     return os.path.join(base_dir, LAUNCHER_DIR_NAME)
 
 def is_port_in_use(port, host='127.0.0.1'):
