@@ -1299,10 +1299,8 @@ class LauncherApp:
 
         base_abs, base_is_px = _current_base_size()
         base_px = int(base_abs)
-        key_delta = int(self._log_font_px_key) - int(self._log_font_px_normal)
-        alert_delta = int(self._log_font_px_alert) - int(self._log_font_px_normal)
-        key_px = max(1, base_px + key_delta)
-        alert_px = max(1, base_px + alert_delta)
+        key_px = base_px
+        alert_px = base_px
 
         widget.tag_config("DEBUG", foreground=self._ui_colors["muted"], font=_font_with_size(base_px, base_is_px))
         widget.tag_config("INFO", foreground=self._ui_colors["text"], font=_font_with_size(base_px, base_is_px))
