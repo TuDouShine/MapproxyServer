@@ -186,9 +186,28 @@ class SeedManager:
         self.project_root = project_root
         self.progress_callback = progress_callback
         self.progress_queue = queue.Queue()
-        self.mapproxy_conf = os.path.join(project_root, 'mapproxy_config', 'mapproxy.yaml')
-        self.seed_conf = os.path.join(project_root, 'mapproxy_config', 'mapproxy-seed.yaml')
-        self.status_file = os.path.join(project_root, 'seed_status.json')
+        self.mapproxy_config_dir = os.path.join(project_root, 'mapproxy_config')
+        self.mapproxy_conf = os.path.join(self.mapproxy_config_dir, 'mapproxy.yaml')
+        self.seed_conf = os.path.join(self.mapproxy_config_dir, 'mapproxy-seed.yaml')
+        self.status_file = os.path.join(self.mapproxy_config_dir, 'seed_status.json')
+        try:
+            os.makedirs(self.mapproxy_config_dir, exist_ok=True)
+        except Exception:
+            logger.exception("创建 mapproxy_config 目录失败")
+        try:
+            legacy_status = os.path.join(project_root, 'seed_status.json')
+            if os.path.exists(legacy_status):
+                if not os.path.exists(self.status_file):
+                    os.replace(legacy_status, self.status_file)
+                else:
+                    legacy_mtime = os.path.getmtime(legacy_status)
+                    migrated_mtime = os.path.getmtime(self.status_file)
+                    if legacy_mtime > migrated_mtime:
+                        os.replace(legacy_status, self.status_file)
+                    else:
+                        os.remove(legacy_status)
+        except Exception:
+            logger.exception("迁移 seed_status.json 失败")
         self.seed_concurrency = self._get_seed_concurrency()
         self.seed_max_retries, self.seed_retry_backoff = self._get_seed_retry_config()
         self.alert_enabled, self.alert_threshold, self.alert_email = self._get_seed_alert_config()

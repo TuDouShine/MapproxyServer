@@ -182,6 +182,26 @@ python main.py
 
 ---
 
+### 2.6 配置文件与目录结构
+
+本项目的运行配置已统一收敛到工作目录下的单一配置文件 `mapproxy_config/map_config.json`，用于集中管理原先分散的配置项，并提供版本追踪与审计记录。
+
+#### 2.6.1 工作目录结构（work_dir）
+*   `mapproxy_config/`
+    *   `mapproxy.yaml`：MapProxy 主配置
+    *   `mapproxy-seed.yaml`：Seed 任务配置
+    *   `map_config.json`：统一运行配置（唯一写入的配置文件）
+*   `logs/`
+    *   `server.log`：服务运行日志
+    *   `seed.log`：Seed 运行日志
+    *   `config_audit.log`：配置变更审计日志（JSON Lines）
+*   `seed_status.json`：Seed 进度与状态文件
+
+#### 2.6.2 兼容性与迁移说明
+*   程序启动或首次保存时，会优先读取 `map_config.json`；若不存在，会从旧配置 `config.json` 与 `advanced_settings.json` 迁移有效配置后生成 `map_config.json`。
+*   `config.json` 与 `advanced_settings.json` 为历史遗留文件：不会再被创建、写入或更新，仅可能在过渡期用于读取兼容与迁移。
+*   与 Python 解释器相关的字段 `python_path`、`selection_label` 不会写入 `map_config.json`。
+
 ## 3. 打包与发布
 
 本章详细说明如何将 MapProxyLauncher 打包为独立的可执行程序 (`.exe`)，以便在未安装 Python 环境的 Windows 机器上直接运行。

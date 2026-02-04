@@ -16,7 +16,7 @@ class SeedManagerDialog:
         self.top.title("切片预生成任务监控")
         
         # Variables
-        self.seed_status_path = os.path.join(get_work_dir(), "seed_status.json")
+        self.seed_status_path = os.path.join(get_work_dir(), "mapproxy_config", "seed_status.json")
         self.seed_progress_var = tk.DoubleVar(value=0.0)
         self.seed_percent_text_var = tk.StringVar(value="0.00%")
         self.seed_rate_var = tk.StringVar(value="0 tiles/s")

@@ -19,10 +19,26 @@ class DependencyManager:
         
         self.packages_dir = os.path.join(self.work_dir, "packages")
         self.req_file = os.path.join(self.work_dir, "requirements.txt")
-        self.deps_status_file = os.path.join(self.work_dir, "deps_status.json")
+        self.mapproxy_config_dir = os.path.join(self.work_dir, "mapproxy_config")
+        self.deps_status_file = os.path.join(self.mapproxy_config_dir, "deps_status.json")
         
         # Initialize directories
         os.makedirs(self.packages_dir, exist_ok=True)
+        os.makedirs(self.mapproxy_config_dir, exist_ok=True)
+        try:
+            legacy_deps_status = os.path.join(self.work_dir, "deps_status.json")
+            if os.path.exists(legacy_deps_status):
+                if not os.path.exists(self.deps_status_file):
+                    os.replace(legacy_deps_status, self.deps_status_file)
+                else:
+                    legacy_mtime = os.path.getmtime(legacy_deps_status)
+                    migrated_mtime = os.path.getmtime(self.deps_status_file)
+                    if legacy_mtime > migrated_mtime:
+                        os.replace(legacy_deps_status, self.deps_status_file)
+                    else:
+                        os.remove(legacy_deps_status)
+        except Exception:
+            self.logger.exception("迁移 deps_status.json 失败")
         self._ensure_requirements_file()
 
     def _ensure_requirements_file(self):

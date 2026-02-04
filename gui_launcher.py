@@ -620,7 +620,7 @@ class LauncherApp:
         self.show_seed_in_system_var = tk.BooleanVar(value=False)
 
         # Seed Progress Tab State
-        self._seed_status_path = os.path.join(get_work_dir(), "seed_status.json")
+        self._seed_status_path = os.path.join(get_work_dir(), "mapproxy_config", "seed_status.json")
         self._seed_seed_yaml_path = os.path.join(get_work_dir(), "mapproxy_config", "mapproxy-seed.yaml")
         self._seed_task_names: list[str] = []
         self._seed_task_progress: dict[str, tuple[float, int, int]] = {}
@@ -639,6 +639,10 @@ class LauncherApp:
         
         # 部署资源
         deploy_resources()
+        try:
+            self.config_mgr.ensure_map_config_exists(source="gui_launcher.init")
+        except Exception:
+            pass
 
         self._ui_colors = {
             "text": "#111111",
@@ -2062,7 +2066,7 @@ class LauncherApp:
         }
         
         try:
-            self.config_mgr.save_launcher_config(config_data)
+            self.config_mgr.save_launcher_config(config_data, source="gui_launcher.save_config")
             self.log("配置已保存。")
             self.show_toast("配置已成功保存")
             # messagebox.showinfo("成功", "配置已保存")
@@ -2075,7 +2079,6 @@ class LauncherApp:
             config = self.config_mgr.load_launcher_config()
             path = config.get("python_path", "")
             port = config.get("port", 8080)
-            host_value = config.get("host", "127.0.0.1")
             allow_external = config.get("allow_external_access", False)
             threads = config.get("waitress_threads", 16)
             selection_label = config.get("selection_label", "")
@@ -2083,12 +2086,7 @@ class LauncherApp:
             self.port_var.set(str(port))
             self.waitress_threads_var.set(str(threads))
             self.allow_external_var.set(bool(allow_external))
-            if self.allow_external_var.get():
-                self.host_var.set("0.0.0.0")
-            else:
-                self.host_var.set("127.0.0.1")
-            if not self.allow_external_var.get() and host_value not in ("0.0.0.0", "::"):
-                self.host_var.set(str(host_value))
+            self.update_host_from_access()
             
             if selection_label:
                 self.python_path_var.set(selection_label)

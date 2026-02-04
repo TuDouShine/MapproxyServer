@@ -85,10 +85,24 @@ def load_json(path):
 def save_json(path, data):
     """写入 JSON 文件"""
     try:
-        with open(path, 'w', encoding='utf-8') as f:
+        target_dir = os.path.dirname(os.path.abspath(path))
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
+
+        tmp_path = f"{path}.{os.getpid()}.tmp"
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
     except Exception:
         logging.exception(f"写入 JSON 失败: {path}")
+        try:
+            tmp_path = f"{path}.{os.getpid()}.tmp"
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
 
 def setup_logging(log_file_path, logger_name="MapProxy"):
     """配置日志"""

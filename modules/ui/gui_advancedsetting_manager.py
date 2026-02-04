@@ -155,7 +155,7 @@ class AdvancedSettingsDialog:
             # Save
             new_settings = self.get_current_settings()
             
-            self.config_mgr.save_advanced_config(new_settings)
+            self.config_mgr.save_advanced_config(new_settings, source="gui_advancedsetting_manager.save")
             
             if self.on_save_callback:
                 self.on_save_callback("高级设置已保存")
