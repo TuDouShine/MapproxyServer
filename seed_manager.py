@@ -58,13 +58,22 @@ class ProgressMonitor:
         self.processed_tiles = 0
         self.last_update_time = 0
         self.update_interval = 1.0 # 1 second
+        self.current_task = None
         
-    def parse_line(self, line):
+    def reset(self) -> None:
+        """重置进度计时与累计值，适配多任务 seed 任务切换场景。"""
+        self.start_time = time.time()
+        self.total_tiles = 0
+        self.processed_tiles = 0
+        self.last_update_time = 0
+
+    def parse_line(self, line: str, seed_name: str | None = None) -> bool:
+        """解析 mapproxy-seed 输出行并上报进度（可选携带 seed 任务名）。"""
         # 1. Try standard format: [15:20:00] 10.50% 100/1000 (15 tiles/s)
         match = re.search(r'\[(.*?)\].*?\s+([0-9.]+)%\s+([0-9]+)\s*/\s*([0-9]+)\s+\(\s*([0-9]+)\s+tiles/s\)', line)
         if match:
             _, percent, processed, total, rate = match.groups()
-            self.update(float(percent), int(processed), int(total), int(rate))
+            self.update(float(percent), int(processed), int(total), int(rate), seed_name=seed_name)
             return True
             
         # 2. Try format without total/rate (observed in logs): 
@@ -73,18 +82,18 @@ class ProgressMonitor:
         if match_alt:
             _, percent, processed = match_alt.groups()
             # Calculate total and rate internally
-            self.update_alt(float(percent), int(processed))
+            self.update_alt(float(percent), int(processed), seed_name=seed_name)
             return True
             
         # 3. Detect Retry/Error messages for status updates
         if "Retries left" in line or "Retry in" in line:
-            self.report_status("retrying", line)
+            self.report_status("retrying", line, seed_name=seed_name)
             return True
             
         return False
 
-    def update_alt(self, percent, processed):
-        """Handle updates where total and rate are missing"""
+    def update_alt(self, percent: float, processed: int, seed_name: str | None = None) -> None:
+        """处理缺少 total/rate 的输出格式并推断缺失字段。"""
         now = time.time()
         
         # Calculate rate based on processed difference
@@ -100,11 +109,12 @@ class ProgressMonitor:
         if percent > 0:
             total = int(processed / (percent / 100.0))
             
-        self.update(percent, processed, total, rate)
+        self.update(percent, processed, total, rate, seed_name=seed_name)
 
-    def report_status(self, status_code, message):
-        """Report non-progress status updates"""
+    def report_status(self, status_code: str, message: str, seed_name: str | None = None) -> None:
+        """上报非进度类状态（如重试/告警信息），并可关联到当前 seed 任务。"""
         info = {
+            "task": seed_name,
             "status": status_code,
             "message": message,
             "last_update": datetime.now().isoformat()
@@ -112,7 +122,8 @@ class ProgressMonitor:
         if self.progress_queue:
             self.progress_queue.put(info)
 
-    def update(self, percent, processed, total, rate):
+    def update(self, percent: float, processed: int, total: int, rate: int, seed_name: str | None = None) -> None:
+        """上报进度更新（可选关联到当前 seed 任务）。"""
         now = time.time()
         if now - self.last_update_time < self.update_interval and percent < 100:
             return
@@ -134,6 +145,7 @@ class ProgressMonitor:
             eta_seconds = remaining / rate
         
         info = {
+            "task": seed_name,
             "processed": processed,
             "total": total,
             "percent": percent,
@@ -145,11 +157,13 @@ class ProgressMonitor:
         if self.progress_queue:
             self.progress_queue.put(info)
             
-    def finish(self):
+    def finish(self, seed_name: str | None = None) -> None:
+        """上报当前任务/运行结束信息。"""
         total_time = time.time() - self.start_time
         avg_time = (total_time / self.processed_tiles) if self.processed_tiles > 0 else 0
         
         result = {
+            "task": seed_name,
             "total_time": total_time,
             "total_tiles": self.processed_tiles,
             "avg_time_per_tile": avg_time,
@@ -229,8 +243,7 @@ class SeedManager:
                 if item:
                     # Update status file
                     status = self.load_status()
-                    # Merge item into status
-                    status.update(item)
+                    status = self._merge_status_update(status, item)
                     status['last_update'] = datetime.now().isoformat()
                     self.save_status(status)
                 
@@ -238,6 +251,31 @@ class SeedManager:
             except Exception:
                 # Avoid crashing the thread
                 time.sleep(1.0)
+
+    def _merge_status_update(self, status: dict, item: dict) -> dict:
+        """合并单次进度/状态更新到 seed_status.json 的结构中（支持按任务聚合）。"""
+        base: dict = status if isinstance(status, dict) else {}
+        upd: dict = item if isinstance(item, dict) else {}
+
+        task = upd.get("task")
+        if task:
+            task_name = str(task)
+            tasks = base.get("tasks")
+            if not isinstance(tasks, dict):
+                tasks = {}
+
+            payload = dict(upd)
+            payload.pop("task", None)
+            tasks[task_name] = payload
+            base["tasks"] = tasks
+            base["current_task"] = task_name
+
+        for k, v in upd.items():
+            if k == "task":
+                continue
+            base[k] = v
+
+        return base
 
     def _get_seed_concurrency(self):
         raw_value = os.environ.get("MAPPROXY_SEED_CONCURRENCY", "").strip()
@@ -413,6 +451,7 @@ class SeedManager:
             logger.info("Seed 进程已启动，开始监听输出...")
             
             current_seed_name = None
+            last_seed_name = None
             
             while True:
                 line = process.stdout.readline()
@@ -445,6 +484,14 @@ class SeedManager:
                             if candidate not in ignored_keywords:
                                 current_seed_name = candidate
                                 logger.debug(f"Detected Seed Name (Format 2): {current_seed_name}", extra={'seed_name': f"[{current_seed_name}]"})
+
+                    if current_seed_name and current_seed_name != last_seed_name:
+                        try:
+                            monitor.reset()
+                            monitor.current_task = str(current_seed_name)
+                        except Exception:
+                            pass
+                        last_seed_name = current_seed_name
 
                     # Format log line with seed name
                     # User requirement: Ensure seed_name is correctly populated in the log column (extra)
@@ -496,7 +543,7 @@ class SeedManager:
                          logger.error(msg, extra=formatter_extra)
                          continue
                     
-                    parsed = monitor.parse_line(clean_line)
+                    parsed = monitor.parse_line(clean_line, seed_name=str(current_seed_name) if current_seed_name else None)
                     if parsed:
                         # Log the progress line so it appears in stdout (for GUI capture) and log file
                         logger.info(log_message, extra=formatter_extra)
@@ -519,7 +566,10 @@ class SeedManager:
             
             if process.returncode == 0:
                 logger.info("Seed 任务完成。")
-                monitor.finish()
+                try:
+                    monitor.finish(seed_name=str(current_seed_name) if current_seed_name else None)
+                except Exception:
+                    monitor.finish()
                 status['last_success'] = datetime.now().isoformat()
                 status['status'] = 'completed'
                 status['message'] = "All tasks finished successfully."
@@ -536,7 +586,14 @@ class SeedManager:
             status['error'] = str(e)
         finally:
             status['last_run_end'] = datetime.now().isoformat()
-            self.save_status(status)
+            try:
+                final_status = self.load_status()
+                if not isinstance(final_status, dict):
+                    final_status = {}
+                final_status.update(status)
+                self.save_status(final_status)
+            except Exception:
+                self.save_status(status)
 
     def start_background_seed(self):
         """

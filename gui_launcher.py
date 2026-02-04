@@ -50,7 +50,8 @@ class SeedProgressCanvasView:
         self._show_toast = show_toast
 
         self._tasks: list[str] = []
-        self._progress: dict[str, tuple[int, int, int]] = {}
+        self._progress: dict[str, tuple[float, int, int]] = {}
+        self._status: dict[str, str] = {}
         self._packaging: set[str] = set()
 
         self._card_gap = 16
@@ -82,8 +83,9 @@ class SeedProgressCanvasView:
         self,
         *,
         tasks: list[str],
-        progress: dict[str, tuple[int, int, int]],
+        progress: dict[str, tuple[float, int, int]],
         packaging: set[str],
+        status: dict[str, str] | None = None,
     ) -> None:
         """更新任务列表与进度数据，并触发重绘。"""
         tasks_new = list(tasks)
@@ -97,6 +99,7 @@ class SeedProgressCanvasView:
             self._button_hitboxes.clear()
         self._tasks = tasks_new
         self._progress = dict(progress)
+        self._status = dict(status) if isinstance(status, dict) else {}
         self._packaging = set(packaging)
         self._update_scroll_region()
         self._render_visible()
@@ -161,7 +164,11 @@ class SeedProgressCanvasView:
         for task_name, (x1, y1, x2, y2) in self._button_hitboxes.items():
             if x1 <= x <= x2 and y1 <= y <= y2:
                 percent, _, _ = self._progress.get(task_name, (0, 0, 0))
-                if percent < 100:
+                try:
+                    percent_f = float(percent)
+                except Exception:
+                    percent_f = 0.0
+                if percent_f < 100.0:
                     return
                 if task_name in self._packaging:
                     self._show_toast("正在打包，请稍候…")
@@ -214,9 +221,17 @@ class SeedProgressCanvasView:
         for idx in range(start_idx, end_idx):
             task_name = self._tasks[idx]
             percent, processed, total = self._progress.get(task_name, (0, 0, 0))
-            percent_i = max(0, min(100, int(percent)))
+            try:
+                percent_f = float(percent)
+            except Exception:
+                percent_f = 0.0
+            if percent_f < 0.0:
+                percent_f = 0.0
+            if percent_f > 100.0:
+                percent_f = 100.0
             is_packaging = task_name in self._packaging
-            sig = (task_name, percent_i, int(processed), int(total), bool(is_packaging), int(cols), int(width))
+            status_code = str(self._status.get(task_name, "") or "")
+            sig = (task_name, round(percent_f, 2), int(processed), int(total), status_code, bool(is_packaging), int(cols), int(width))
 
             if idx in self._rendered_indices and self._render_cache.get(idx) == sig:
                 if task_name in prev_hitboxes:
@@ -248,9 +263,17 @@ class SeedProgressCanvasView:
         y1 = y0 + card_h
 
         task_name = self._tasks[idx]
-        percent, processed, total = self._progress.get(task_name, (0, 0, 0))
-        percent = max(0, min(100, int(percent)))
-        is_done = percent >= 100
+        percent_raw, processed, total = self._progress.get(task_name, (0, 0, 0))
+        try:
+            percent = float(percent_raw)
+        except Exception:
+            percent = 0.0
+        if percent < 0.0:
+            percent = 0.0
+        if percent > 100.0:
+            percent = 100.0
+        status_code = str(self._status.get(task_name, "") or "").lower()
+        is_done = percent >= 100.0 or status_code in {"completed", "finished"}
         is_packaging = task_name in self._packaging
 
         fonts = self._get_fonts() or {}
@@ -280,6 +303,8 @@ class SeedProgressCanvasView:
         muted = self._colors.get("muted", "#5B616E")
         blue = self._colors.get("seed", "#1D4ED8")
         green = self._colors.get("success", "#0B6B2E")
+        red = self._colors.get("error", "#B00020")
+        orange = self._colors.get("warn", "#8A4B00")
 
         self._canvas.create_rectangle(
             x0,
@@ -308,7 +333,7 @@ class SeedProgressCanvasView:
 
         bar_h = 10
         bar_y = name_y + 28
-        percent_str = f"{percent} %"
+        percent_str = f"{percent:.2f}%"
         percent_w = tkfont.Font(font=percent_font).measure(percent_str)
 
         bar_x0 = x0 + pad
@@ -385,22 +410,84 @@ class SeedProgressCanvasView:
             tags=(f"seedcard_{idx}", "seed_progress_item"),
         )
 
-        count_str = f"已生成 {processed}/{total}"
-        count_w = tkfont.Font(font=mono_font).measure(count_str)
+        row_y = btn_y1 + (btn_h // 2)
         count_x_right = btn_x1 - 10
-        count_x = max(x0 + pad, count_x_right - count_w)
-        count_y = btn_y1 + (btn_h // 2)
+
+        status_text = self._status_text_for_task(status_code, percent)
+        status_color = self._status_color_for_text(status_text, green=green, blue=blue, red=red, orange=orange, muted=muted)
+        status_str = f"状态: {status_text}"
+
+        status_max_w = max(40, count_x_right - (x0 + pad) - 12)
+        status_render = self._ellipsize(status_str, mono_font, status_max_w)
+        try:
+            status_w = tkfont.Font(font=mono_font).measure(status_render)
+        except Exception:
+            status_w = 0
+        min_count_x = x0 + pad + int(status_w) + 12
+
         self._canvas.create_text(
-            count_x,
-            count_y,
+            x0 + pad,
+            row_y,
             anchor="w",
-            text=count_str,
+            text=status_render,
+            fill=status_color,
+            font=mono_font,
+            tags=(f"seedcard_{idx}", "seed_progress_item"),
+        )
+
+        count_str = f"已生成 {processed}/{total}"
+        count_max_w = max(20, int(count_x_right) - int(min_count_x))
+        count_render = self._ellipsize(count_str, mono_font, count_max_w)
+        self._canvas.create_text(
+            count_x_right,
+            row_y,
+            anchor="e",
+            text=count_render,
             fill=muted,
             font=mono_font,
             tags=(f"seedcard_{idx}", "seed_progress_item"),
         )
 
         self._button_hitboxes[task_name] = (int(btn_x1), int(btn_y1), int(btn_x2), int(btn_y2))
+
+    def _status_text_for_task(self, status_code: str, percent: float) -> str:
+        try:
+            pct = float(percent)
+        except Exception:
+            pct = 0.0
+        code = str(status_code or "").lower()
+        if code in {"failed", "error"}:
+            return "失败"
+        if code in {"retrying", "paused"}:
+            return "暂停"
+        if pct >= 100.0 or code in {"completed", "finished"}:
+            return "已完成"
+        if code in {"running", "starting"}:
+            return "进行中"
+        if pct <= 0.0:
+            return "待处理"
+        return "进行中"
+
+    def _status_color_for_text(
+        self,
+        status_text: str,
+        *,
+        green: str,
+        blue: str,
+        red: str,
+        orange: str,
+        muted: str,
+    ) -> str:
+        txt = str(status_text or "")
+        if txt == "已完成":
+            return green
+        if txt == "进行中":
+            return blue
+        if txt == "失败":
+            return red
+        if txt == "暂停":
+            return orange
+        return muted
 
     def _ellipsize(self, text: str, font: tuple, max_width: int) -> str:
         """将超长文本省略号截断，确保单行展示。"""
@@ -532,7 +619,8 @@ class LauncherApp:
         self._seed_status_path = os.path.join(get_work_dir(), "seed_status.json")
         self._seed_seed_yaml_path = os.path.join(get_work_dir(), "mapproxy-seed.yaml")
         self._seed_task_names: list[str] = []
-        self._seed_task_progress: dict[str, tuple[int, int, int]] = {}
+        self._seed_task_progress: dict[str, tuple[float, int, int]] = {}
+        self._seed_task_status: dict[str, str] = {}
         self._seed_packaging: set[str] = set()
         self._seed_progress_refresh_pending = False
         self._seed_progress_yaml_mtime: Optional[float] = None
@@ -966,6 +1054,7 @@ class LauncherApp:
                         tasks=self._seed_task_names,
                         progress=self._seed_task_progress,
                         packaging=self._seed_packaging,
+                        status=self._seed_task_status,
                     )
             except Exception:
                 pass
@@ -988,13 +1077,60 @@ class LauncherApp:
             except Exception:
                 status = {}
 
+            next_progress: dict[str, tuple[float, int, int]] = {}
+            for name in self._seed_task_names:
+                next_progress[name] = self._seed_task_progress.get(name, (0, 0, 0))
+            next_status: dict[str, str] = {}
+            for name in self._seed_task_names:
+                next_status[name] = str(self._seed_task_status.get(name, "") or "")
+
+            tasks_payload = status.get("tasks")
+            if isinstance(tasks_payload, dict):
+                for name in self._seed_task_names:
+                    raw = tasks_payload.get(name)
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        pct_f = float(raw.get("percent", 0.0) or 0.0)
+                    except Exception:
+                        pct_f = 0.0
+                    try:
+                        processed = int(raw.get("processed", 0) or 0)
+                    except Exception:
+                        processed = 0
+                    try:
+                        total = int(raw.get("total", 0) or 0)
+                    except Exception:
+                        total = 0
+                    try:
+                        st = str(raw.get("status", "") or "")
+                    except Exception:
+                        st = ""
+
+                    if pct_f < 0.0:
+                        pct_f = 0.0
+                    if pct_f > 100.0:
+                        pct_f = 100.0
+                    if total > 0 and processed >= total:
+                        pct_f = 100.0
+                        processed = total
+
+                    next_progress[name] = (float(pct_f), int(processed), int(total))
+                    if st:
+                        next_status[name] = st
+
             state = str(status.get("status", "") or "").lower()
             if state in {"completed", "finished"}:
                 for name in self._seed_task_names:
-                    pct, processed, total = self._seed_task_progress.get(name, (0, 0, 0))
+                    pct, processed, total = next_progress.get(name, (0, 0, 0))
                     if total > 0 and processed < total:
                         processed = total
-                    self._seed_task_progress[name] = (100, int(processed), int(total))
+                    next_progress[name] = (100.0, int(processed), int(total))
+                    if str(next_status.get(name, "") or "").lower() not in {"failed", "error"}:
+                        next_status[name] = "completed"
+
+            self._seed_task_progress = next_progress
+            self._seed_task_status = next_status
         except Exception:
             pass
         finally:
@@ -1034,20 +1170,24 @@ class LauncherApp:
             total = int(prog_match.group("total"))
 
             if total > 0 and processed >= total:
-                pct_i = 100
+                pct_val = 100.0
                 processed = total
             else:
-                pct_i = int(pct_f)
-                if pct_i < 0:
-                    pct_i = 0
-                if pct_i > 100:
-                    pct_i = 100
+                pct_val = float(pct_f)
+                if pct_val < 0.0:
+                    pct_val = 0.0
+                if pct_val > 100.0:
+                    pct_val = 100.0
 
             old = self._seed_task_progress.get(task)
-            new = (pct_i, processed, total)
+            new = (float(pct_val), int(processed), int(total))
             if old == new:
                 return False
             self._seed_task_progress[task] = new
+            if float(pct_val) >= 100.0:
+                self._seed_task_status[task] = "completed"
+            else:
+                self._seed_task_status[task] = "running"
             if task not in self._seed_task_names and task:
                 self._seed_task_names.append(task)
             return True
@@ -2047,6 +2187,7 @@ class LauncherApp:
             
             # 启动线程读取输出
             threading.Thread(target=self.read_process_output, args=(self.service_process,), daemon=True).start()
+            self._sync_seed_running_status_with_service(True)
             
             self.btn_start.config(state="disabled")
             self.btn_stop.config(state="normal")
@@ -2074,6 +2215,7 @@ class LauncherApp:
             if msg is None:
                 self.log("服务已停止。", "error")
                 self.set_status("服务已停止", "red")
+                self._sync_seed_running_status_with_service(False)
                 self.service_process = None
                 self.btn_start.config(state="normal")
                 self.btn_stop.config(state="disabled")
@@ -2128,11 +2270,98 @@ class LauncherApp:
         except Exception:
             logging.exception("读取 server.log 失败")
 
+    def _sync_seed_running_status_with_service(self, is_running: bool) -> None:
+        try:
+            target_status = "running" if bool(is_running) else "paused"
+            allowed_prev = {"paused"} if bool(is_running) else {"running", "starting", "retrying"}
+
+            status_data: dict = {}
+            if os.path.exists(self._seed_status_path):
+                try:
+                    with open(self._seed_status_path, "r", encoding="utf-8") as f:
+                        status_data = json.load(f) if f else {}
+                except Exception:
+                    status_data = {}
+
+            task_name: str = ""
+            try:
+                raw_current = status_data.get("current_task")
+                if isinstance(raw_current, str):
+                    task_name = raw_current
+            except Exception:
+                task_name = ""
+
+            tasks_payload = status_data.get("tasks") if isinstance(status_data, dict) else None
+            if task_name and isinstance(tasks_payload, dict):
+                raw_task = tasks_payload.get(task_name)
+                if isinstance(raw_task, dict):
+                    cur_status = str(raw_task.get("status", "") or "").lower()
+                    try:
+                        cur_pct = float(raw_task.get("percent", 0.0) or 0.0)
+                    except Exception:
+                        cur_pct = 0.0
+                    if cur_pct >= 100.0:
+                        return
+                    if cur_status not in allowed_prev:
+                        task_name = ""
+            else:
+                task_name = ""
+
+            if not task_name:
+                for name, st in list(self._seed_task_status.items()):
+                    try:
+                        st_norm = str(st or "").lower()
+                    except Exception:
+                        st_norm = ""
+                    if st_norm not in allowed_prev:
+                        continue
+                    pct, _processed, _total = self._seed_task_progress.get(name, (0.0, 0, 0))
+                    try:
+                        pct_f = float(pct)
+                    except Exception:
+                        pct_f = 0.0
+                    if pct_f >= 100.0:
+                        continue
+                    task_name = str(name)
+                    break
+
+            if not task_name:
+                return
+
+            self._seed_task_status[task_name] = target_status
+            self._schedule_seed_progress_refresh()
+
+            if not os.path.exists(self._seed_status_path):
+                return
+            if not isinstance(status_data, dict):
+                return
+            tasks = status_data.get("tasks")
+            if not isinstance(tasks, dict):
+                tasks = {}
+                status_data["tasks"] = tasks
+            raw_entry = tasks.get(task_name)
+            if not isinstance(raw_entry, dict):
+                raw_entry = {}
+                tasks[task_name] = raw_entry
+            if str(raw_entry.get("status", "") or "").lower() in {"completed", "finished", "failed", "error"}:
+                return
+            raw_entry["status"] = target_status
+            try:
+                status_data["last_update"] = datetime.now().isoformat()
+            except Exception:
+                pass
+
+            try:
+                with open(self._seed_status_path, "w", encoding="utf-8") as f:
+                    json.dump(status_data, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
 
 
     def stop_service(self):
-        """停止服务，仅终止由当前实例启动的进程"""
-        self.btn_stop.config(state="disabled") # 防止重复点击
         
         # 仅当持有有效的服务进程标识符时才执行终止操作
         if self.service_process:
@@ -2163,6 +2392,7 @@ class LauncherApp:
             # 清理标识符
             self.service_process = None
             self.set_status("服务已停止", "red")
+            self._sync_seed_running_status_with_service(False)
             # 防止读取旧日志造成误判
             try:
                 if os.path.exists(self.server_log_path):
@@ -2315,7 +2545,8 @@ def _capture_layout_artifacts(tag: str) -> int:
         try:
             if hasattr(app, "seed_progress_view") and getattr(app, "seed_progress_view", None):
                 dummy_tasks = [f"seed_{i:04d}" for i in range(12)]
-                dummy_progress: dict[str, tuple[int, int, int]] = {}
+                dummy_progress: dict[str, tuple[float, int, int]] = {}
+                dummy_status: dict[str, str] = {}
                 for i, name in enumerate(dummy_tasks):
                     pct = (i * 9) % 101
                     total = 1000
@@ -2323,8 +2554,16 @@ def _capture_layout_artifacts(tag: str) -> int:
                     if pct >= 100:
                         pct = 100
                         processed = total
-                    dummy_progress[name] = (int(pct), int(processed), int(total))
-                app.seed_progress_view.set_state(tasks=dummy_tasks, progress=dummy_progress, packaging=set())
+                    dummy_progress[name] = (float(pct), int(processed), int(total))
+                    if i % 7 == 0:
+                        dummy_status[name] = "failed"
+                    elif i % 5 == 0:
+                        dummy_status[name] = "retrying"
+                    elif pct >= 100:
+                        dummy_status[name] = "completed"
+                    else:
+                        dummy_status[name] = "running"
+                app.seed_progress_view.set_state(tasks=dummy_tasks, progress=dummy_progress, packaging=set(), status=dummy_status)
         except Exception:
             pass
 
