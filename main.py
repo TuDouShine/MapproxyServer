@@ -183,6 +183,10 @@ class MapProxyServer:
 
         # 7. Start Service
         svc_runner = ServiceRunner(self.work_dir, self.env_mgr.venv_dir if not getattr(sys, 'frozen', False) else None)
+        try:
+            svc_runner.logger = self.logger
+        except Exception:
+            pass
         svc_runner.run_service(args.host, args.port, python_cmd=venv_python, threads=args.threads)
 
 if __name__ == "__main__":

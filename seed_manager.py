@@ -44,6 +44,11 @@ def _configure_seed_logger(log_directory: str) -> None:
 
     try:
         if logger.handlers:
+            for h in list(logger.handlers):
+                try:
+                    h.close()
+                except Exception:
+                    pass
             logger.handlers.clear()
     except Exception:
         pass
@@ -224,6 +229,10 @@ class SeedManager:
     def __init__(self, project_root, venv_dir=None, progress_callback=None):
         """Seed 任务管理器（支持后台执行与进度写入）。"""
         self.project_root = project_root
+        try:
+            _configure_seed_logger(os.path.join(str(project_root), "logs"))
+        except Exception:
+            pass
         self.progress_callback = progress_callback
         self.progress_queue = queue.Queue()
         self.mapproxy_config_dir = os.path.join(project_root, 'mapproxy_config')

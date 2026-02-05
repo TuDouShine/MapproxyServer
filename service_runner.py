@@ -38,7 +38,6 @@ class ServiceRunner:
         self.logger.info("使用内置环境启动 Waitress...")
         self.logger.info(f"监听: http://{display_host}:{port}/demo/")
         self.logger.info(f"工作线程数: {threads}")
-        self.logger.info("按 Ctrl+C 停止服务")
         try:
             from waitress import serve
             from mapproxy.wsgiapp import make_wsgi_app
@@ -48,7 +47,7 @@ class ServiceRunner:
                 raise FileNotFoundError(f"MapProxy 配置文件不存在: {mapproxy_conf}")
 
             application = make_wsgi_app(mapproxy_conf)
-            print(f"INFO:waitress:Serving on http://{display_host}:{port}")
+            print(f"INFO:waitress:Serving on http://{display_host}:{port}", flush=True)
             serve(application, host=host, port=port, threads=threads)
         except ImportError:
             self.logger.exception("无法导入 Waitress 或配置")
@@ -87,7 +86,7 @@ class ServiceRunner:
             "    if not os.path.exists(conf):\n"
             "        raise FileNotFoundError(f'MapProxy 配置文件不存在: {conf}')\n"
             "    app = make_wsgi_app(conf)\n"
-            f"    print('INFO:waitress:Serving on http://{display_host}:{py_port}')\n"
+            f"    print('INFO:waitress:Serving on http://{display_host}:{py_port}', flush=True)\n"
             f"    serve(app, host={py_host}, port={py_port}, threads={py_threads})\n"
             "except Exception as e:\n"
             "    sys.stderr.write(str(e) + '\\n')\n"
@@ -98,7 +97,6 @@ class ServiceRunner:
 
         self.logger.info(f"启动命令: {' '.join(run_cmd)}")
         self.logger.info(f"服务启动中... 请访问 http://{display_host}:{port}/demo/")
-        self.logger.info("按 Ctrl+C 停止服务")
 
         try:
             subprocess.run(run_cmd, cwd=self.work_dir)
