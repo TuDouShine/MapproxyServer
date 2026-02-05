@@ -425,15 +425,6 @@ class ConfigManager:
                 except Exception:
                     self.logger.exception(f"Failed to copy config: {filename}")
 
-        config_py_src = os.path.join(self.project_root, "config.py")
-        config_py_dst = os.path.join(self.work_dir, "config.py")
-        if os.path.exists(config_py_src) and not os.path.exists(config_py_dst):
-            try:
-                shutil.copy2(config_py_src, config_py_dst)
-                self.logger.info("Initialized config: config.py")
-            except Exception:
-                self.logger.exception("Failed to copy config: config.py")
-
         try:
             self.ensure_map_config_exists(source="config_manager.init_configs")
         except Exception:

@@ -12,7 +12,7 @@
 *   **可视化管理界面 (GUI)**：提供友好的图形界面，轻松配置 Python 环境、服务端口，并实时监控运行状态。
 *   **实时状态监控**：界面实时显示服务初始化、运行成功、失败等状态，并提供详细的运行日志。
 *   **快捷交互操作**：支持一键复制服务地址、在浏览器打开服务、打开工作目录等快捷操作。
-*   **图层信息面板**：自动解析 `mapproxy.yaml` 配置文件，列出所有可用图层及其缓存格式，支持点击一键复制图层名称和格式。
+*   **图层信息面板**：自动解析 `mapproxy_config/mapproxy.yaml` 配置文件，列出所有可用图层及其缓存格式，支持点击一键复制图层名称和格式。
 *   **自动化环境管理**：自动检测系统 Python 版本，创建独立的虚拟环境（venv），避免污染系统环境。
 *   **离线依赖支持**：支持自动下载依赖包到本地 `packages/` 目录，实现依赖的离线化归档与安装，便于在无外网环境迁移部署。
 *   **高性能服务**：集成 Waitress WSGI 服务器，提供稳定、快速的瓦片地图服务。
@@ -133,7 +133,7 @@ python main.py
     ```
 
 3.  **配置调整 (重要)**：
-    内网环境通常无法访问互联网地图源（如默认配置中的 ArcGIS Online）。需修改 `mapproxy.yaml`：
+    内网环境通常无法访问互联网地图源（如默认配置中的 ArcGIS Online）。需修改 `mapproxy_config/mapproxy.yaml`：
     *   将 `sources` 中的 `url` 指向内网发布的 GIS 服务地址。
     *   或者确保 `cache_data` 目录中已包含完整的预生成瓦片缓存。
 
@@ -226,8 +226,7 @@ python main.py
 ```python
 # 数据文件 (datas): 将非代码资源打包进 exe
 datas = [
-    ('main.py', '.'),              # 核心服务逻辑
-    ('mapproxy.yaml', '.'),        # 默认配置
+    ('mapproxy_config', 'mapproxy_config'),  # 默认配置目录
     ('requirements.txt', '.'),     # 依赖列表
     # ... MapProxy 内部模板和配置
     (os.path.join(mapproxy_path, 'config', 'config-schema.json'), 'mapproxy/config'),
@@ -282,9 +281,9 @@ hiddenimports = [
 
 由于 MapProxy 包含大量非 Python 资源（如模板、配置 schema），我们采用了以下策略确保其在打包后可用：
 
-1.  **静态资源嵌入**: 在 `build.spec` 的 `datas` 列表中，显式指定了 `mapproxy.yaml`, `templates` 等文件的包含路径。
-2.  **运行时资源释放**: `gui_launcher.py` 检测到运行在 Frozen (打包) 模式下时，会利用 `sys._MEIPASS` 访问临时目录，并将必要的文件（如 `mapproxy.yaml`, `config.py`）部署到用户的**工作目录** (`MapProxyLauncher/`) 中。
-    *   *机制*: 首次运行时，程序会自动将内嵌的配置文件复制到 exe 同级目录下的 `MapProxyLauncher` 文件夹，确保用户可以修改配置。
+1.  **静态资源嵌入**: 在 `build.spec` 的 `datas` 列表中，显式指定了 MapProxy 的 schema、模板以及默认 `mapproxy_config/` 目录等资源。
+2.  **运行时资源释放**: 打包版运行时会利用 `sys._MEIPASS` 访问临时解压目录，并将必要的**配置资源**（如 `mapproxy_config/`）部署到用户的**工作目录**中，供用户修改配置。
+    *   *说明*: 工作目录只用于存放配置、日志、缓存等运行数据，不会复制或生成任何 `.py` 源文件。
 
 ### 3.5 测试与验证
 
@@ -299,7 +298,7 @@ hiddenimports = [
     *   检查“图层信息”面板是否正确显示图层列表。
 4.  **常见问题排查**:
     *   *错误 "Failed to execute script gui_launcher"*: 通常是因为缺少隐藏导入。尝试在 `build.spec` 的 `hiddenimports` 中添加缺失的模块，然后重新打包。
-    *   *地图无法加载*: 检查工作目录下的 `mapproxy.yaml` 是否正确生成。
+    *   *地图无法加载*: 检查工作目录下的 `mapproxy_config/mapproxy.yaml` 是否正确生成。
 
 ### 3.6 高级选项
 
@@ -321,10 +320,10 @@ hiddenimports = [
 *   **Python 环境设置**：只读下拉列表，展示检测到的 Python 解释器路径。
 *   **服务设置**：端口配置，支持 1-65535 范围。
 *   **图层信息**：
-    *   **图层名称**：显示 `mapproxy.yaml` 中定义的图层，**点击即可复制**。
+    *   **图层名称**：显示 `mapproxy_config/mapproxy.yaml` 中定义的图层，**点击即可复制**。
     *   **缓存格式**：显示对应的瓦片格式（如 `image/png`），**点击即可复制**。
 *   **控制按钮**：
-    *   `确认设置`：保存当前配置到 `config.json`。
+    *   `确认设置`：保存当前配置到 `mapproxy_config/map_config.json`。
     *   `启动服务` / `停止服务`：控制服务生命周期。
 *   **运行状态**：
     *   显示当前状态（就绪、运行中、失败）。
@@ -341,13 +340,18 @@ MapproxyServer/
 ├── MapProxyLauncher.exe      # [入口] GUI 启动程序（打包版）
 ├── gui_launcher.py           # [源码] GUI 启动程序源码
 ├── main.py                   # [核心] 服务主逻辑，负责环境构建与服务启动
-├── config.py                 # [配置] Waitress 服务器启动脚本
-├── mapproxy.yaml             # [配置] MapProxy 核心配置文件（图层、源、缓存规则）
+├── mapproxy_config/          # [配置] 默认配置目录（源码模式）
+│   ├── mapproxy.yaml         # MapProxy 主配置（图层、源、缓存规则）
+│   ├── mapproxy-seed.yaml    # Seed 配置
+│   └── map_config.json       # 统一运行配置（唯一写入）
 ├── requirements.txt          # [配置] 项目依赖列表
 ├── venv/                     # [自动生成] Python 虚拟环境目录
 ├── packages/                 # [自动生成] 离线依赖包存放目录
 ├── MapProxyLauncher/         # [数据] GUI 模式下的工作目录（存放日志、配置副本等）
-│   ├── config.json           # GUI 用户配置文件
+│   ├── mapproxy_config/      # 运行时配置目录（可修改）
+│   │   ├── mapproxy.yaml
+│   │   ├── mapproxy-seed.yaml
+│   │   └── map_config.json
 │   ├── logs/                 # 服务运行日志
 │   └── ...
 └── cache_data/               # [自动生成] 地图瓦片缓存数据目录
@@ -361,10 +365,10 @@ MapproxyServer/
 A: 请尝试以管理员身份运行程序，或检查端口是否被其他程序占用。
 
 **Q: 为什么图层列表是空的？**
-A: 请检查 `mapproxy.yaml` 文件是否配置正确，且位于正确的位置（源码模式在根目录，GUI 模式在 `MapProxyLauncher` 目录下）。
+A: 请检查 `mapproxy_config/mapproxy.yaml` 文件是否配置正确，且位于正确的位置（源码模式在项目根目录的 `mapproxy_config/` 下，GUI/打包模式在工作目录的 `mapproxy_config/` 下）。
 
 **Q: 如何修改地图源？**
-A: 编辑 `mapproxy.yaml` 文件，修改 `sources` 和 `layers` 部分。修改后重启服务即可生效。
+A: 编辑 `mapproxy_config/mapproxy.yaml` 文件，修改 `sources` 和 `layers` 部分。修改后重启服务即可生效。
 
 **Q: 如何清理缓存和重置环境？**
 A: 直接删除 `cache_data/` 目录下的所有文件即可。MapProxy 会在下次访问时自动重新生成。
@@ -383,7 +387,7 @@ A: 为了保证稳定性，列表被设计为只读。如果你的 Python 未被
 *   **新增**：高级设置面板，支持配置 Seed 服务并发数、重试策略和告警。
 *   **优化**：GUI 布局修复，解决了默认窗口下部分内容显示不全的问题。
 *   **优化**：Python 解释器选择框样式修复。
-*   **新增**：配置文件 `config.json` 持久化存储 Seed 服务配置。
+*   **新增**：配置文件 `mapproxy_config/map_config.json` 持久化存储 Seed 服务配置。
 
 ### v1.3.0 (2026-01-27)
 *   **新增**：增强的服务停止机制。GUI 关闭时会自动终止服务进程，并基于端口检测确保服务彻底停止，防止端口占用残留。

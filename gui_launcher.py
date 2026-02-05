@@ -521,23 +521,9 @@ def deploy_resources():
     else:
         source_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # 需要复制的文件列表
-    # 注意：ConfigManager 会处理配置文件的初始化，但这里我们还需要处理代码文件
-    # 为了避免冲突，我们可以让 ConfigManager 处理配置，这里只处理代码
-    # 或者为了简单，保留这里的逻辑，但确保一致性
     files_to_copy = [
-        "main.py",
-        "config.py",
-        "seed_manager.py",
         "mapproxy_config",
         "requirements.txt",
-        "utils.py",
-        "env_manager.py",
-        "dependency_manager.py",
-        "service_runner.py",
-        "seed_orchestrator.py",
-        "config_manager.py",
-        "python_detector.py" # Ensure all modules are deployed
     ]
     
     for filename in files_to_copy:
@@ -554,7 +540,7 @@ def deploy_resources():
                         logging.exception(f"Failed to deploy directory: {filename}")
                 continue
 
-            if filename.endswith(".yaml") or filename.endswith(".json") or filename == "requirements.txt" or filename == "config.py":
+            if filename.endswith(".yaml") or filename.endswith(".json") or filename == "requirements.txt":
                 if not os.path.exists(dst):
                     try:
                         shutil.copy2(src, dst)
@@ -751,12 +737,30 @@ class LauncherApp:
         # 1. Python 环境 (Row 0) - Exclusive Row
         frame_env = ttk.LabelFrame(main_frame, text="运行环境", padding="16", style="Card.TLabelframe")
         frame_env.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        
-        ttk.Label(frame_env, text="Python 解释器:").pack(side=tk.LEFT)
-        self.combo_python = ttk.Combobox(frame_env, textvariable=self.python_path_var, state="readonly")
-        self.combo_python.pack(side=tk.LEFT, padx=(8, 8), fill=tk.X, expand=True)
-        self.btn_refresh = ttk.Button(frame_env, text="刷新", command=self.scan_pythons)
-        self.btn_refresh.pack(side=tk.LEFT)
+
+        if getattr(sys, "frozen", False):
+            ttk.Label(frame_env, text="内置解释器（固定）:").pack(side=tk.LEFT)
+            self.entry_python_info = ttk.Entry(
+                frame_env,
+                textvariable=self.python_path_var,
+                state="readonly",
+                font=("Consolas", -16),
+            )
+            self.entry_python_info.pack(side=tk.LEFT, padx=(8, 8), fill=tk.X, expand=True)
+            self.btn_copy_python = ttk.Button(
+                frame_env,
+                text="复制路径",
+                command=lambda: self.copy_to_clipboard(sys.executable),
+            )
+            self.btn_copy_python.pack(side=tk.LEFT)
+            self.combo_python = None
+            self.btn_refresh = None
+        else:
+            ttk.Label(frame_env, text="Python 解释器:").pack(side=tk.LEFT)
+            self.combo_python = ttk.Combobox(frame_env, textvariable=self.python_path_var, state="readonly")
+            self.combo_python.pack(side=tk.LEFT, padx=(8, 8), fill=tk.X, expand=True)
+            self.btn_refresh = ttk.Button(frame_env, text="刷新", command=self.scan_pythons)
+            self.btn_refresh.pack(side=tk.LEFT)
         
         # 2. 服务配置 & 核心控制 (Row 1) - Merged & Refactored
         frame_config = ttk.LabelFrame(main_frame, text="服务配置与控制", padding="16", style="Card.TLabelframe")
@@ -1810,11 +1814,28 @@ class LauncherApp:
                 messagebox.showerror("错误", f"导出失败: {e}")
 
     def scan_pythons(self):
+        """扫描并刷新 Python 解释器列表（打包版固定为内置解释器）。"""
         if getattr(self, 'is_scanning', False):
             return
+
+        if getattr(sys, "frozen", False):
+            try:
+                py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            except Exception:
+                py_ver = "unknown"
+            internal_value = f"Internal (内置) Python {py_ver} - {sys.executable}"
+            self.python_path_var.set(internal_value)
+            try:
+                self.log("打包版运行：已固定使用内置解释器。")
+            except Exception:
+                pass
+            return
+
         self.is_scanning = True
-        self.btn_refresh.config(state="disabled")
-        self.combo_python.config(state="disabled")
+        if self.btn_refresh is not None:
+            self.btn_refresh.config(state="disabled")
+        if self.combo_python is not None:
+            self.combo_python.config(state="disabled")
         self.log("正在扫描 Python 解释器...")
         
         def run_scan():
@@ -1830,29 +1851,36 @@ class LauncherApp:
         self.is_scanning = False
         
         values = [f"{i['version']} - {i['path']}" for i in interpreters]
-        self.combo_python['values'] = values
+        if self.combo_python is not None:
+            self.combo_python['values'] = values
         
         # Restore selection or default to first
         current = self.python_path_var.get()
         if current and current in values:
-            self.combo_python.current(values.index(current))
+            if self.combo_python is not None:
+                self.combo_python.current(values.index(current))
         elif values:
-            self.combo_python.current(0)
+            if self.combo_python is not None:
+                self.combo_python.current(0)
             
         self.log(f"扫描完成，发现 {len(interpreters)} 个解释器。")
         
         # Re-enable UI if service not running
         if not self.service_process:
-            self.btn_refresh.config(state="normal")
-            self.combo_python.config(state="readonly")
+            if self.btn_refresh is not None:
+                self.btn_refresh.config(state="normal")
+            if self.combo_python is not None:
+                self.combo_python.config(state="readonly")
 
     def _on_scan_error(self, error_msg):
         self.is_scanning = False
         self.log(f"扫描出错: {error_msg}", "error")
         # Re-enable UI if service not running
         if not self.service_process:
-            self.btn_refresh.config(state="normal")
-            self.combo_python.config(state="readonly")
+            if self.btn_refresh is not None:
+                self.btn_refresh.config(state="normal")
+            if self.combo_python is not None:
+                self.combo_python.config(state="readonly")
 
     def update_host_from_access(self):
         if self.allow_external_var.get():
@@ -1865,8 +1893,10 @@ class LauncherApp:
         readonly = "disabled" if is_running else "readonly"
         
         # Environment
-        self.combo_python.config(state=readonly)
-        self.btn_refresh.config(state=state)
+        if self.combo_python is not None:
+            self.combo_python.config(state=readonly)
+        if self.btn_refresh is not None:
+            self.btn_refresh.config(state=state)
         
         # Config
         self.entry_port.config(state=state)
@@ -2094,6 +2124,7 @@ class LauncherApp:
             self.logger.exception("读取配置失败")
 
     def start_service(self):
+        """启动服务进程并触发就绪检测。"""
         if self.service_process:
             return
 
@@ -2122,19 +2153,25 @@ class LauncherApp:
             python_path = selection
             
         work_dir = get_work_dir()
-        script_path = os.path.join(work_dir, "main.py")
+        script_path = os.path.join(get_base_dir(), "main.py")
+        is_frozen = bool(getattr(sys, "frozen", False))
         
         # 构造命令
         cmd = []
         
         # 判断是 Internal 还是 External
-        if "Internal" in selection or python_path == sys.executable:
-            # Internal Mode
-            # 直接调用当前可执行文件（或 python），并传递 --service 参数
-            # 由于我们在 main block 添加了参数分发，这将启动服务而不是 GUI
+        if is_frozen:
             cmd = [sys.executable, '--service']
+        elif "Internal" in selection or python_path == sys.executable:
+            if not os.path.exists(script_path):
+                messagebox.showerror("错误", f"找不到 main.py: {script_path}")
+                return
+            cmd = [sys.executable, script_path, '--service']
         else:
             # External Mode
+            if is_frozen:
+                messagebox.showerror("错误", "打包版不支持使用外部 Python 启动服务，请选择 Internal 模式。")
+                return
             if not os.path.exists(python_path):
                  messagebox.showerror("错误", "Python 路径无效")
                  return
@@ -2188,6 +2225,10 @@ class LauncherApp:
             # 启动线程读取输出
             threading.Thread(target=self.read_process_output, args=(self.service_process,), daemon=True).start()
             self._sync_seed_running_status_with_service(True)
+            try:
+                self._schedule_service_ready_check(port, host_value)
+            except Exception:
+                pass
             
             self.btn_start.config(state="disabled")
             self.btn_stop.config(state="normal")
@@ -2252,6 +2293,48 @@ class LauncherApp:
             self.read_server_log()
         
         self.root.after(100, self.update_logs)
+
+    def _schedule_service_ready_check(self, port: int, host_value: str) -> None:
+        """定时检测端口就绪，避免仅依赖日志关键字导致状态不更新。"""
+        try:
+            self._ready_check_started_at = time.time()
+        except Exception:
+            self._ready_check_started_at = None
+
+        def _tick() -> None:
+            should_reschedule = True
+            try:
+                if not self.service_process:
+                    should_reschedule = False
+                    return
+                if self.service_process.poll() is not None:
+                    should_reschedule = False
+                    return
+
+                display_host = "127.0.0.1" if host_value in ("0.0.0.0", "::") else host_value
+                if is_port_in_use(int(port), display_host):
+                    url = f"http://{display_host}:{int(port)}/demo/"
+                    self.set_status("运行成功", "green", url)
+                    should_reschedule = False
+                    return
+
+                if self._ready_check_started_at is not None:
+                    if (time.time() - float(self._ready_check_started_at)) > 15:
+                        should_reschedule = False
+                        return
+            except Exception:
+                should_reschedule = False
+                return
+            if should_reschedule:
+                try:
+                    self.root.after(300, _tick)
+                except Exception:
+                    pass
+
+        try:
+            self.root.after(300, _tick)
+        except Exception:
+            pass
 
     def read_server_log(self):
         if self.service_process:
@@ -2744,6 +2827,51 @@ def _capture_layout_artifacts(tag: str) -> int:
 
     return 0
 
+def _run_startup_benchmark() -> int:
+    """以非 GUI 方式执行一次启动路径，并输出耗时结果（供构建脚本采集）。"""
+    import time as _time
+    import json as _json
+
+    started = _time.perf_counter()
+    output_path = _parse_cli_flag_value(sys.argv, "--benchmark-output")
+    try:
+        deploy_resources()
+        work_dir = get_work_dir()
+        os.makedirs(work_dir, exist_ok=True)
+        cfg_mgr = ConfigManager(work_dir, get_base_dir())
+        cfg_mgr.init_configs()
+
+        elapsed_ms = int((_time.perf_counter() - started) * 1000)
+        payload = {
+            "ok": True,
+            "elapsed_ms": elapsed_ms,
+            "work_dir": work_dir,
+            "base_dir": get_base_dir(),
+            "is_frozen": bool(getattr(sys, "frozen", False)),
+            "created_at": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        elapsed_ms = int((_time.perf_counter() - started) * 1000)
+        payload = {
+            "ok": False,
+            "elapsed_ms": elapsed_ms,
+            "error": str(e),
+            "work_dir": get_work_dir(),
+            "base_dir": get_base_dir(),
+            "is_frozen": bool(getattr(sys, "frozen", False)),
+            "created_at": datetime.now().isoformat(),
+        }
+
+    try:
+        if not output_path:
+            output_path = os.path.join(get_work_dir(), "startup_benchmark.json")
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        return 2
+    return 0
+
 if __name__ == "__main__":
     # Check for service arguments to avoid launching GUI when running as service
     if "--service" in sys.argv:
@@ -2758,6 +2886,9 @@ if __name__ == "__main__":
     if "--capture-layout" in sys.argv:
         tag = _parse_cli_flag_value(sys.argv, "--tag") or datetime.now().strftime("%Y%m%d_%H%M%S")
         raise SystemExit(_capture_layout_artifacts(tag))
+
+    if "--benchmark-startup" in sys.argv:
+        raise SystemExit(_run_startup_benchmark())
 
     try:
         # High DPI support

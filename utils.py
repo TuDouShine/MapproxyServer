@@ -20,9 +20,19 @@ def get_base_dir():
 
 def get_user_data_dir(app_dir_name: str = LAUNCHER_DIR_NAME) -> str:
     """获取用户数据目录（优先使用 Windows 的 LocalAppData/AppData）。"""
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if not base:
+            base = os.path.expanduser("~")
+        return os.path.join(base, app_dir_name)
+
+    if sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+        return os.path.join(base, app_dir_name)
+
+    base = os.environ.get("XDG_DATA_HOME")
     if not base:
-        base = os.path.expanduser("~")
+        base = os.path.expanduser("~/.local/share")
     return os.path.join(base, app_dir_name)
 
 def cleanup_empty_legacy_launcher_dir_in_cwd(app_dir_name: str = LAUNCHER_DIR_NAME, logger_name: str = "Launcher") -> None:
@@ -44,9 +54,21 @@ def cleanup_empty_legacy_launcher_dir_in_cwd(app_dir_name: str = LAUNCHER_DIR_NA
         logger.exception("清理遗留空目录失败")
 
 def get_work_dir(base_dir=None):
-    """获取工作目录（数据存储目录）"""
+    """获取工作目录（数据存储目录）。"""
     if base_dir is None:
+        if getattr(sys, "frozen", False):
+            legacy_dir = os.path.join(get_base_dir(), LAUNCHER_DIR_NAME)
+            try:
+                os.makedirs(legacy_dir, exist_ok=True)
+                probe_path = os.path.join(legacy_dir, f".write_probe_{os.getpid()}.tmp")
+                with open(probe_path, "w", encoding="utf-8") as f:
+                    f.write("ok")
+                os.remove(probe_path)
+                return legacy_dir
+            except Exception:
+                return get_user_data_dir(LAUNCHER_DIR_NAME)
         base_dir = get_base_dir()
+
     base_dir = os.path.abspath(str(base_dir))
     if os.path.basename(base_dir) == LAUNCHER_DIR_NAME:
         return base_dir

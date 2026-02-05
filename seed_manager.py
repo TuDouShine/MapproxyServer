@@ -4,15 +4,13 @@ import threading
 import time
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import hashlib
 import queue
 import re
+import io
+import contextlib
 from datetime import datetime
-
-# 配置日志
-log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
 
 class SeedContextFilter(logging.Filter):
     """Ensures 'seed_name' is present in the record."""
@@ -28,26 +26,67 @@ class StrictInfoFilter(logging.Filter):
 
 logger = logging.getLogger("SeedManager")
 logger.setLevel(logging.INFO)
-logger.addFilter(SeedContextFilter())
 
-# Clear existing handlers to avoid duplicates during reload
-if logger.handlers:
-    logger.handlers.clear()
+_seed_logger_configured_dir: str | None = None
 
-# File Handler (Captures all levels, uses unified format)
-file_handler = logging.FileHandler(os.path.join(log_dir, "seed.log"), encoding='utf-8')
-# Removed StrictInfoFilter to allow WARNING/ERROR
-# Standardized Format: Timestamp | Level | SeedName | Module | Message
-formatter = logging.Formatter('%(asctime)s | %(levelname)-2s | %(name)s | %(seed_name)s | %(message)s')
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
+def _configure_seed_logger(log_directory: str) -> None:
+    global _seed_logger_configured_dir
+    if not log_directory:
+        return
+    target_dir = os.path.abspath(log_directory)
+    if _seed_logger_configured_dir == target_dir and logger.handlers:
+        return
 
-# Stream Handler (Standard)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-logger.addHandler(stream_handler)
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+    except Exception:
+        target_dir = ""
 
-logger.propagate = False
+    try:
+        if logger.handlers:
+            logger.handlers.clear()
+    except Exception:
+        pass
+
+    try:
+        logger.addFilter(SeedContextFilter())
+    except Exception:
+        pass
+
+    formatter = logging.Formatter('%(asctime)s | %(levelname)-2s | %(name)s | %(seed_name)s | %(message)s')
+
+    configured = False
+    if target_dir:
+        try:
+            log_path = os.path.join(target_dir, "seed.log")
+            file_handler = RotatingFileHandler(
+                log_path,
+                maxBytes=10 * 1024 * 1024,
+                backupCount=5,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+            configured = True
+        except Exception:
+            configured = False
+
+    try:
+        import sys
+        stream_handler = logging.StreamHandler(stream=sys.stdout)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+        configured = True
+    except Exception:
+        pass
+
+    try:
+        logger.propagate = False
+    except Exception:
+        pass
+
+    if configured and target_dir:
+        _seed_logger_configured_dir = target_dir
 
 class ProgressMonitor:
     def __init__(self, callback=None, progress_queue=None):
@@ -183,6 +222,7 @@ class ProgressMonitor:
 
 class SeedManager:
     def __init__(self, project_root, venv_dir=None, progress_callback=None):
+        """Seed 任务管理器（支持后台执行与进度写入）。"""
         self.project_root = project_root
         self.progress_callback = progress_callback
         self.progress_queue = queue.Queue()
@@ -243,6 +283,154 @@ class SeedManager:
         
         if not found:
             logger.warning(f"mapproxy-seed not found in venv(s), assuming it is in PATH.")
+
+    def _process_seed_output_line(self, clean_line: str, monitor: ProgressMonitor, state: dict) -> None:
+        """处理一行 seed 输出：解析任务名/进度并写入日志与状态队列。"""
+        try:
+            current_seed_name = state.get("current_seed_name")
+            last_seed_name = state.get("last_seed_name")
+
+            seed_match = re.search(r"Seeding '(.+?)'", clean_line)
+            if seed_match:
+                current_seed_name = seed_match.group(1)
+                logger.debug(
+                    f"Detected Seed Name (Format 1): {current_seed_name}",
+                    extra={"seed_name": f"[{current_seed_name}]"},
+                )
+            else:
+                task_match = re.match(r"^([a-zA-Z0-9_]+):$", clean_line)
+                if task_match:
+                    candidate = task_match.group(1)
+                    ignored_keywords = {"Levels", "Overwriting", "Check", "Removing", "Skipping"}
+                    if candidate not in ignored_keywords:
+                        current_seed_name = candidate
+                        logger.debug(
+                            f"Detected Seed Name (Format 2): {current_seed_name}",
+                            extra={"seed_name": f"[{current_seed_name}]"},
+                        )
+
+            if current_seed_name and current_seed_name != last_seed_name:
+                try:
+                    monitor.reset()
+                    monitor.current_task = str(current_seed_name)
+                except Exception:
+                    pass
+                last_seed_name = current_seed_name
+
+            seed_col_val = f"[{current_seed_name}]" if current_seed_name else "-"
+            formatter_extra = {"seed_name": seed_col_val}
+
+            log_message = clean_line
+            if current_seed_name:
+                ts_match = re.match(r"^(\[.*?\])(.*)", clean_line)
+                if ts_match:
+                    timestamp_part = ts_match.group(1)
+                    rest_part = ts_match.group(2)
+                    log_message = f"{timestamp_part} {current_seed_name}{rest_part}"
+                else:
+                    log_message = f"[{current_seed_name}] {clean_line}"
+
+            tile_err_match = re.search(r"could not retrieve tile \((?P<x>\d+),\s*(?P<y>\d+),\s*(?P<z>\d+)\)", clean_line)
+            ssl_err_match = re.search(r"ssl\.SSLEOFError", clean_line)
+
+            if tile_err_match:
+                x, y, z = tile_err_match.group("x"), tile_err_match.group("y"), tile_err_match.group("z")
+                msg = f"Task: Seeding | Failed Tile: z={z}/x={x}/y={y} | Error: {clean_line}"
+                if current_seed_name and current_seed_name not in msg:
+                    msg = f"[{current_seed_name}] {msg}"
+                logger.warning(msg, extra=formatter_extra)
+                return
+
+            if ssl_err_match:
+                msg = f"Task: Seeding | Network Error: SSL Handshake Failed | {clean_line}"
+                if current_seed_name and current_seed_name not in msg:
+                    msg = f"[{current_seed_name}] {msg}"
+                logger.error(msg, extra=formatter_extra)
+                return
+
+            parsed = monitor.parse_line(clean_line, seed_name=str(current_seed_name) if current_seed_name else None)
+            if parsed:
+                logger.info(log_message, extra=formatter_extra)
+            else:
+                if "error" in clean_line.lower() or "exception" in clean_line.lower():
+                    logger.error(log_message, extra=formatter_extra)
+                elif "%" in clean_line or "tiles/s" in clean_line:
+                    logger.warning(f"Seed Output (Unparsed Progress): {log_message}", extra=formatter_extra)
+                else:
+                    if "Seeding" in clean_line:
+                        logger.info(log_message, extra=formatter_extra)
+                    else:
+                        logger.debug(log_message, extra=formatter_extra)
+
+            state["current_seed_name"] = current_seed_name
+            state["last_seed_name"] = last_seed_name
+        except Exception:
+            return
+
+    def _run_seed_inprocess(self, cmd: list[str], monitor: ProgressMonitor) -> int:
+        """在当前进程中执行 seed（打包环境优先），返回退出码。"""
+        try:
+            import sys
+            import multiprocessing
+            import mapproxy.seed.script as seed_script
+
+            state: dict = {"current_seed_name": None, "last_seed_name": None}
+
+            class _LineCatcher(io.TextIOBase):
+                def __init__(self, on_line):
+                    self._buf = ""
+                    self._on_line = on_line
+
+                def write(self, s):
+                    if not s:
+                        return 0
+                    self._buf += str(s)
+                    while "\n" in self._buf:
+                        line, self._buf = self._buf.split("\n", 1)
+                        line = line.strip("\r").strip()
+                        if line:
+                            self._on_line(line)
+                    return len(s)
+
+                def flush(self):
+                    if self._buf:
+                        line = self._buf.strip("\r").strip()
+                        self._buf = ""
+                        if line:
+                            self._on_line(line)
+
+            def _handle(line: str) -> None:
+                try:
+                    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+                    clean_line = ansi_escape.sub("", line)
+                except Exception:
+                    clean_line = line
+                self._process_seed_output_line(clean_line, monitor, state)
+
+            catcher = _LineCatcher(_handle)
+            old_argv = sys.argv
+            sys.argv = cmd[:]
+            try:
+                with contextlib.redirect_stdout(catcher), contextlib.redirect_stderr(catcher):
+                    try:
+                        try:
+                            multiprocessing.freeze_support()
+                        except Exception:
+                            pass
+                        seed_script.main()
+                        return 0
+                    except SystemExit as e:
+                        code = e.code
+                        if code is None:
+                            return 0
+                        if isinstance(code, int):
+                            return int(code)
+                        return 1
+            finally:
+                sys.argv = old_argv
+        except Exception:
+            logger.exception("Seed 进程内执行失败")
+            return 1
 
     def _status_writer_loop(self):
         """
@@ -430,163 +618,74 @@ class SeedManager:
             
             # 使用 Popen 以便实时获取输出或后台运行
             logger.info(f"执行命令: {' '.join(cmd)}")
-            
-            # 验证可执行文件是否存在
-            executable = cmd[0]
-            if not os.path.isabs(executable):
-                import shutil
-                if shutil.which(executable) is None:
-                     raise FileNotFoundError(f"命令 '{executable}' 未在系统路径中找到。请检查依赖是否安装。")
-            elif not os.path.exists(executable):
-                 raise FileNotFoundError(f"可执行文件不存在: {executable}")
-
-            # Windows 下隐藏控制台窗口
-            startupinfo = None
-            creationflags = 0
-            if os.name == 'nt':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 0 # SW_HIDE
-                creationflags = subprocess.CREATE_NO_WINDOW
-
-            # Prepare environment to force unbuffered output
-            env = os.environ.copy()
-            env['PYTHONUNBUFFERED'] = '1'
 
             monitor = ProgressMonitor(callback=self.progress_callback, progress_queue=self.progress_queue)
-            
-            # 使用 Popen 替代 run 以便更好地控制窗口
-            process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.STDOUT, 
-                text=True,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
-                bufsize=1,
-                env=env
-            )
-            
-            logger.info("Seed 进程已启动，开始监听输出...")
-            
-            current_seed_name = None
-            last_seed_name = None
-            
-            while True:
-                line = process.stdout.readline()
-                if not line:
-                    break
-                line = line.strip()
-                if line:
-                    # Strip ANSI color codes just in case
-                    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-                    clean_line = ansi_escape.sub('', line)
-                    
-                    # DEBUG: Log raw line to verify what we are receiving
+
+            import sys
+            if getattr(sys, "frozen", False):
+                cmd_inprocess = cmd[:]
+                cmd_inprocess[0] = "mapproxy-seed"
+                logger.info("Seed 进程已启动，开始监听输出...")
+                rc = self._run_seed_inprocess(cmd_inprocess, monitor)
+                returncode = rc
+            else:
+                executable = cmd[0]
+                if not os.path.isabs(executable):
+                    import shutil
+                    if shutil.which(executable) is None:
+                        status["status"] = "disabled"
+                        status["message"] = f"跳过 Seed：命令 '{executable}' 未在系统路径中找到。"
+                        logger.warning(status["message"])
+                        return
+                elif not os.path.exists(executable):
+                    status["status"] = "disabled"
+                    status["message"] = f"跳过 Seed：可执行文件不存在: {executable}"
+                    logger.warning(status["message"])
+                    return
+
+                startupinfo = None
+                creationflags = 0
+                if os.name == "nt":
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = 0
+                    creationflags = subprocess.CREATE_NO_WINDOW
+
+                env = os.environ.copy()
+                env["PYTHONUNBUFFERED"] = "1"
+
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                    bufsize=1,
+                    env=env,
+                )
+
+                logger.info("Seed 进程已启动，开始监听输出...")
+                state: dict = {"current_seed_name": None, "last_seed_name": None}
+                while True:
+                    line = process.stdout.readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+                    clean_line = ansi_escape.sub("", line)
                     logger.debug(f"RAW: {clean_line}")
+                    self._process_seed_output_line(clean_line, monitor, state)
 
-                    # Detect seed name change
-                    # Format 1: Seeding 'seed_name' with ... (Standard/Old)
-                    seed_match = re.search(r"Seeding '(.+?)'", clean_line)
-                    if seed_match:
-                        current_seed_name = seed_match.group(1)
-                        logger.debug(f"Detected Seed Name (Format 1): {current_seed_name}", extra={'seed_name': f"[{current_seed_name}]"})
-                    
-                    # Format 2: task_name: (Observed in current environment)
-                    # We look for a line that is just "name:" but exclude common info lines.
-                    else:
-                        task_match = re.match(r"^([a-zA-Z0-9_]+):$", clean_line)
-                        if task_match:
-                            candidate = task_match.group(1)
-                            # Filter out known keywords that look like tasks
-                            ignored_keywords = {'Levels', 'Overwriting', 'Check', 'Removing', 'Skipping'}
-                            if candidate not in ignored_keywords:
-                                current_seed_name = candidate
-                                logger.debug(f"Detected Seed Name (Format 2): {current_seed_name}", extra={'seed_name': f"[{current_seed_name}]"})
+                process.wait()
+                returncode = int(process.returncode or 0)
 
-                    if current_seed_name and current_seed_name != last_seed_name:
-                        try:
-                            monitor.reset()
-                            monitor.current_task = str(current_seed_name)
-                        except Exception:
-                            pass
-                        last_seed_name = current_seed_name
-
-                    # Format log line with seed name
-                    # User requirement: Ensure seed_name is correctly populated in the log column (extra)
-                    # and matches the configuration.
-                    
-                    # 1. Prepare formatter extra
-                    # If current_seed_name is known, use it; otherwise use '-'
-                    seed_col_val = f"[{current_seed_name}]" if current_seed_name else '-'
-                    formatter_extra = {'seed_name': seed_col_val}
-                    
-                    # 2. Construct enhanced message
-                    # We keep the inline injection logic as it provides good context in the message body too,
-                    # especially if the column is narrow or for tools that just read the message.
-                    # However, if the user thinks 'seed_name' = '-' is an issue, they primarily mean the column.
-                    
-                    log_message = clean_line
-                    
-                    if current_seed_name:
-                         # Check for timestamp pattern at start (e.g., [15:20:00])
-                         ts_match = re.match(r"^(\[.*?\])(.*)", clean_line)
-                         if ts_match:
-                             # Insert seed name after timestamp: [Time] SeedName ...
-                             timestamp_part = ts_match.group(1)
-                             rest_part = ts_match.group(2)
-                             # Ensure spacing
-                             log_message = f"{timestamp_part} {current_seed_name}{rest_part}"
-                         else:
-                             # Fallback if no timestamp, check if we should prepend
-                             # If the line is just "Seeding 'task'...", prepending makes it "[task] Seeding 'task'..." which is fine.
-                             log_message = f"[{current_seed_name}] {clean_line}"
-                    
-                    # Special handling for Tile Errors and SSL Errors to extract more context
-                    tile_err_match = re.search(r"could not retrieve tile \((?P<x>\d+),\s*(?P<y>\d+),\s*(?P<z>\d+)\)", clean_line)
-                    ssl_err_match = re.search(r"ssl\.SSLEOFError", clean_line)
-                    
-                    if tile_err_match:
-                         x, y, z = tile_err_match.group('x'), tile_err_match.group('y'), tile_err_match.group('z')
-                         msg = f"Task: Seeding | Failed Tile: z={z}/x={x}/y={y} | Error: {clean_line}"
-                         # For errors, we might still want the seed name visible if not in timestamp format
-                         if current_seed_name and current_seed_name not in msg:
-                              msg = f"[{current_seed_name}] {msg}"
-                         logger.warning(msg, extra=formatter_extra)
-                         continue 
-                         
-                    if ssl_err_match:
-                         msg = f"Task: Seeding | Network Error: SSL Handshake Failed | {clean_line}"
-                         if current_seed_name and current_seed_name not in msg:
-                              msg = f"[{current_seed_name}] {msg}"
-                         logger.error(msg, extra=formatter_extra)
-                         continue
-                    
-                    parsed = monitor.parse_line(clean_line, seed_name=str(current_seed_name) if current_seed_name else None)
-                    if parsed:
-                        # Log the progress line so it appears in stdout (for GUI capture) and log file
-                        logger.info(log_message, extra=formatter_extra)
-                    elif not parsed:
-                        # Log unparsed lines to debug why we are missing them, but avoid spamming too much
-                        # Only log if it looks like progress but failed, or is an error
-                        if "error" in clean_line.lower() or "exception" in clean_line.lower():
-                            logger.error(log_message, extra=formatter_extra)
-                        elif "%" in clean_line or "tiles/s" in clean_line:
-                            logger.warning(f"Seed Output (Unparsed Progress): {log_message}", extra=formatter_extra)
-                        else:
-                            # Log other info at debug level
-                            # Also log "Seeding ..." lines here as INFO or DEBUG to keep context
-                            if "Seeding" in clean_line:
-                                logger.info(log_message, extra=formatter_extra)
-                            else:
-                                logger.debug(log_message, extra=formatter_extra)
-            
-            process.wait()
-            
-            if process.returncode == 0:
+            if returncode == 0:
                 logger.info("Seed 任务完成。")
                 try:
-                    monitor.finish(seed_name=str(current_seed_name) if current_seed_name else None)
+                    monitor.finish(seed_name=str(monitor.current_task) if getattr(monitor, "current_task", None) else None)
                 except Exception:
                     monitor.finish()
                 status['last_success'] = datetime.now().isoformat()
@@ -595,9 +694,9 @@ class SeedManager:
                 if current_hash:
                     status['seed_hash'] = current_hash
             else:
-                logger.error(f"Seed 任务失败，返回码: {process.returncode}")
+                logger.error(f"Seed 任务失败，返回码: {returncode}")
                 status['status'] = 'failed'
-                status['error'] = f"Process exited with code {process.returncode}"
+                status['error'] = f"Process exited with code {returncode}"
                 
         except Exception as e:
             logger.exception("Seed 执行异常")

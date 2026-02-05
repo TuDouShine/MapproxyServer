@@ -12,11 +12,8 @@ from config_manager import ConfigManager
 class MapProxyServer:
     def __init__(self, work_dir=None):
         # 1. Determine paths
-        self.project_root = get_base_dir()
-        if getattr(sys, 'frozen', False):
-             self.project_root = sys._MEIPASS
-        
-        self.work_dir = work_dir if work_dir else get_work_dir(self.project_root)
+        self.project_root = sys._MEIPASS if getattr(sys, 'frozen', False) else get_base_dir()
+        self.work_dir = work_dir if work_dir else get_work_dir()
         os.makedirs(self.work_dir, exist_ok=True)
         
         # 2. Setup Logging
