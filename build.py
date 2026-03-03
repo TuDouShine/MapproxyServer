@@ -47,7 +47,8 @@ def build():
     print(f"\nStarting build for {system}...")
     
     # 基础命令
-    cmd = ['pyinstaller', 'build.spec', '--clean', '--noconfirm']
+    # 使用 sys.executable 确保调用的是当前环境的 PyInstaller
+    cmd = [sys.executable, '-m', 'PyInstaller', 'build.spec', '--clean', '--noconfirm']
     
     # 根据平台调整 (目前 build.spec 已包含大部分逻辑，这里作为扩展点)
     if system == 'Linux':

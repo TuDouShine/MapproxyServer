@@ -23,6 +23,7 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
 ENV/
 
 # Installer logs
@@ -94,3 +95,4 @@ seed_status.json
 # Local configuration overrides (if any)
 .env
 config_local.py
+
