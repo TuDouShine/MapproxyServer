@@ -1,0 +1,24 @@
+caches:
+  test_cache:
+    cache:
+      directory: test_cache_dir
+      type: file
+    grids:
+    - GLOBAL_WEBMERCATOR
+    sources:
+    - test_source
+layers:
+- name: test
+  sources:
+  - test_cache
+  title: test
+services:
+  wmts: {}
+sources:
+  test_source:
+    grid: GLOBAL_WEBMERCATOR
+    max_res: 70000
+    min_res: 160000
+    transparent: true
+    type: tile
+    url: http://localhost:65432/%(z)s/%(x)s/%(y)s.png

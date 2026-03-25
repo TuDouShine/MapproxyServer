@@ -222,64 +222,107 @@ class ConfigManager:
         return {k: v for k, v in config.items() if k not in banned}
 
     def _build_map_config_from_legacy(self) -> dict:
-        launcher = self._filter_launcher_config_for_map_config(self._load_legacy_launcher_config_raw())
+        """Migrate legacy configs (config.json, advanced_settings.json) to V2 structure directly"""
+        # Use raw legacy config to ensure we get python_path etc.
+        launcher = self._load_legacy_launcher_config_raw()
         adv = self._load_legacy_advanced_config_raw()
-        return {
-            "version": 1,
-            "updated_at": self._now_iso(),
+        return self._migrate_v1_to_v2({
             "launcher_config": launcher,
-            "advanced_settings": adv,
+            "advanced_settings": adv
+        })
+
+    def _migrate_v1_to_v2(self, v1_config: dict) -> dict:
+        """Migrate V1 config (nested launcher_config) to V2 (flat system/gui_state)"""
+        launcher = v1_config.get("launcher_config", {})
+        adv = v1_config.get("advanced_settings", {})
+        
+        # Determine host/external access
+        allow_external = bool(launcher.get("allow_external_access", False))
+        host = "0.0.0.0" if allow_external else "127.0.0.1"
+        
+        # Check if legacy seeding config exists and migrate it
+        seeding_legacy = v1_config.get("seeding", {})
+        seeding_tasks = []
+        
+        if seeding_legacy:
+             # If it's already a V2-like dict with tasks, preserve it
+             if "tasks" in seeding_legacy:
+                 seeding_tasks = seeding_legacy["tasks"]
+             elif seeding_legacy.get("enabled", False):
+                 # Migrate legacy single-task format
+                 seeding_tasks.append({
+                     "name": "migrated_seed_task",
+                     "zoom_levels": seeding_legacy.get("zoom_levels", [0, 8]),
+                     "bbox": seeding_legacy.get("bbox", [73, 18, 135, 54]),
+                     "refresh_before": "2026-01-01T00:00:00"
+                 })
+        else:
+             # Default seeding task if none existed
+             seeding_tasks.append({
+                 "name": "default_seed_task",
+                 "zoom_levels": [0, 8],
+                 "bbox": [73, 18, 135, 54],
+                 "refresh_before": "2026-01-01T00:00:00"
+             })
+
+        return {
+            "version": 2,
+            "updated_at": self._now_iso(),
+            "system": {
+                "host": host,
+                "port": launcher.get("port", 8080),
+                "concurrency": adv.get("concurrency", 2),
+                "python_path": launcher.get("python_path", "Internal"),
+                "allow_external_access": allow_external,
+                "waitress_threads": launcher.get("waitress_threads", 16),
+                "http": {
+                    "client_timeout": 60,
+                    "ssl_no_cert_checks": False,
+                    "proxy": ""
+                }
+            },
+            "gui_state": {
+                "selection_label": launcher.get("selection_label", "")
+            },
+            "sources": {
+                "global_url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/%(z)s/%(y)s/%(x)s",
+                "china_url": "",
+                "china_annotation_url": ""
+            },
+            "features": {
+                "smart_switch": False,
+                "description": "开启后：中国境内使用天地图，境外使用Global源；关闭后：仅使用Global源",
+                "offline_mode": False,
+                "mbtiles_path": "./data/map_cache.mbtiles"
+            },
+            "seeding": {
+                "tasks": seeding_tasks
+            },
+            # Preserve advanced settings for retry/alert which are not in V2 spec yet
+            "advanced_settings": adv 
         }
 
     def validate_launcher_config_for_map_config(self, config: dict) -> None:
-        if not isinstance(config, dict):
-            raise ValueError("launcher_config 必须为对象")
-        if "python_path" in config:
-            raise ValueError("launcher_config 不允许包含 python_path")
-        if "selection_label" in config:
-            raise ValueError("launcher_config 不允许包含 selection_label")
-        if "host" in config:
-            raise ValueError("launcher_config 不允许包含 host")
-
-        if "port" in config:
-            port = config.get("port")
-            try:
-                port = int(port)
-            except (ValueError, TypeError):
-                raise ValueError(f"Invalid port: {port}")
-            if not (1 <= port <= 65535):
-                raise ValueError(f"Invalid port: {port}")
-
-        if "waitress_threads" in config:
-            threads = config.get("waitress_threads")
-            try:
-                threads = int(threads)
-            except (ValueError, TypeError):
-                raise ValueError(f"Invalid threads count: {threads}")
-            if not (1 <= threads <= 32):
-                raise ValueError(f"Threads count must be between 1 and 32: {threads}")
+        """Deprecated: Validation is now done on V2 structure"""
+        pass
 
     def validate_map_config(self, config: dict) -> None:
         if not isinstance(config, dict):
             raise ValueError("map_config.json 必须为 JSON 对象")
         ver = config.get("version")
-        if not isinstance(ver, int) or ver < 1:
-            raise ValueError("version 必须为 >= 1 的整数")
+        if not isinstance(ver, int) or ver < 2:
+            raise ValueError("version 必须为 >= 2 的整数")
         updated_at = config.get("updated_at")
         if not isinstance(updated_at, str) or not updated_at:
             raise ValueError("updated_at 必须为非空字符串")
 
-        launcher = config.get("launcher_config")
-        if launcher is not None:
-            if not isinstance(launcher, dict):
-                raise ValueError("launcher_config 必须为对象")
-            self.validate_launcher_config_for_map_config(launcher)
-
-        adv = config.get("advanced_settings")
-        if adv is not None:
-            if not isinstance(adv, dict):
-                raise ValueError("advanced_settings 必须为对象")
-            self.validate_advanced_config(adv)
+        system = config.get("system")
+        if not isinstance(system, dict):
+            raise ValueError("system 配置必须为对象")
+            
+        # Basic type checks for system
+        if not isinstance(system.get("port"), int):
+            raise ValueError("system.port 必须为整数")
 
     def load_map_config(self) -> dict:
         if not os.path.exists(self.map_config_path):
@@ -288,20 +331,40 @@ class ConfigManager:
         raw = load_json(self.map_config_path)
         if not isinstance(raw, dict):
             return self._build_map_config_from_legacy()
+            
+        # Automatic Migration
+        version = raw.get("version", 1)
+        if version < 2:
+            self.logger.info(f"Migrating map_config from version {version} to 2")
+            
+            # Augment with legacy config.json data if available (for python_path, etc.)
+            try:
+                legacy_launcher = self._load_legacy_launcher_config_raw()
+                if isinstance(legacy_launcher, dict) and "launcher_config" in raw:
+                    for k, v in legacy_launcher.items():
+                        if k not in raw["launcher_config"]:
+                            raw["launcher_config"][k] = v
+            except Exception:
+                pass
 
-        raw_launcher = raw.get("launcher_config") if isinstance(raw.get("launcher_config"), dict) else self._load_legacy_launcher_config_raw()
-        merged = {
-            "version": raw.get("version") if isinstance(raw.get("version"), int) else 1,
-            "updated_at": raw.get("updated_at") if isinstance(raw.get("updated_at"), str) else self._now_iso(),
-            "launcher_config": self._filter_launcher_config_for_map_config(raw_launcher),
-            "advanced_settings": self._normalize_advanced_config(raw.get("advanced_settings") if isinstance(raw.get("advanced_settings"), dict) else self._load_legacy_advanced_config_raw()),
-        }
+            migrated = self._migrate_v1_to_v2(raw)
+            # Save immediately to complete migration
+            try:
+                self._atomic_write_json(self.map_config_path, migrated)
+            except Exception:
+                pass
+            return migrated
+
         try:
-            self.validate_map_config(merged)
+            self.validate_map_config(raw)
         except Exception:
-            self.logger.exception("map_config.json 校验失败，回退为 legacy 配置")
+            self.logger.exception("map_config.json 校验失败，尝试自动修复/回退")
+            # If validation fails, we might want to fallback or try to fix. 
+            # For now, let's try to migrate whatever we have as if it was legacy, 
+            # or just return it if it's "good enough" to not crash.
+            # But strictly, let's return a safe default if it's totally broken.
             return self._build_map_config_from_legacy()
-        return merged
+        return raw
 
     def ensure_map_config_exists(self, source: str = "init") -> dict:
         self._ensure_dirs()
@@ -347,21 +410,44 @@ class ConfigManager:
         self._ensure_dirs()
         old_cfg = self.load_map_config()
         new_cfg = dict(old_cfg)
-        new_cfg["launcher_config"] = dict(old_cfg.get("launcher_config") or {}) if isinstance(old_cfg.get("launcher_config"), dict) else {}
-        new_cfg["advanced_settings"] = self._normalize_advanced_config(old_cfg.get("advanced_settings") if isinstance(old_cfg.get("advanced_settings"), dict) else {})
+        
+        # Ensure V2 structure exists
+        if "system" not in new_cfg:
+            new_cfg["system"] = {}
+        if "gui_state" not in new_cfg:
+            new_cfg["gui_state"] = {}
+        if "advanced_settings" not in new_cfg:
+            new_cfg["advanced_settings"] = {}
 
         if launcher_update is not None:
             if not isinstance(launcher_update, dict):
                 raise ValueError("launcher_update 必须为对象")
             self.validate_launcher_config(launcher_update)
-            new_cfg["launcher_config"] = self._filter_launcher_config_for_map_config(launcher_update)
-            self.validate_launcher_config_for_map_config(new_cfg["launcher_config"])
+            
+            # Update System config
+            if "port" in launcher_update:
+                new_cfg["system"]["port"] = launcher_update["port"]
+            if "waitress_threads" in launcher_update:
+                new_cfg["system"]["waitress_threads"] = launcher_update["waitress_threads"]
+            if "python_path" in launcher_update:
+                new_cfg["system"]["python_path"] = launcher_update["python_path"]
+            if "allow_external_access" in launcher_update:
+                new_cfg["system"]["allow_external_access"] = launcher_update["allow_external_access"]
+                new_cfg["system"]["host"] = launcher_update.get("host", "0.0.0.0" if launcher_update["allow_external_access"] else "127.0.0.1")
+            
+            # Update GUI State
+            if "selection_label" in launcher_update:
+                new_cfg["gui_state"]["selection_label"] = launcher_update["selection_label"]
 
         if advanced_update is not None:
             if not isinstance(advanced_update, dict):
                 raise ValueError("advanced_update 必须为对象")
             self.validate_advanced_config(advanced_update)
             new_cfg["advanced_settings"] = self._normalize_advanced_config(advanced_update)
+            
+            # Sync concurrency to system
+            if "concurrency" in advanced_update:
+                 new_cfg["system"]["concurrency"] = advanced_update["concurrency"]
 
         old_version = old_cfg.get("version") if isinstance(old_cfg.get("version"), int) else 1
         new_cfg["version"] = int(old_version) + 1
@@ -431,25 +517,23 @@ class ConfigManager:
             self.logger.exception("Failed to initialize map_config.json")
 
     def load_launcher_config(self):
-        """Load GUI launcher config"""
+        """Load GUI launcher config (Adapter for V2)"""
         try:
             map_cfg = self.load_map_config()
-            raw = map_cfg.get("launcher_config")
+            system = map_cfg.get("system", {})
+            gui = map_cfg.get("gui_state", {})
+            
+            # Reconstruct legacy-like dict for GUI
+            config = {
+                "port": system.get("port", 8080),
+                "python_path": system.get("python_path", "Internal"),
+                "allow_external_access": system.get("allow_external_access", False),
+                "waitress_threads": system.get("waitress_threads", 16),
+                "selection_label": gui.get("selection_label", "")
+            }
         except Exception:
             self.logger.exception("读取 map_config.json 失败，回退为 legacy 配置")
-            raw = None
-        if raw is None:
-            raw = self._load_legacy_launcher_config_raw()
-        config = raw if isinstance(raw, dict) else {}
-        try:
-            legacy = self._load_legacy_launcher_config_raw()
-            if isinstance(legacy, dict):
-                if "python_path" in legacy and "python_path" not in config:
-                    config["python_path"] = legacy.get("python_path")
-                if "selection_label" in legacy and "selection_label" not in config:
-                    config["selection_label"] = legacy.get("selection_label")
-        except Exception:
-            pass
+            config = self._load_legacy_launcher_config_raw()
 
         seed_settings = config.get("seed_settings")
         if not isinstance(seed_settings, dict):

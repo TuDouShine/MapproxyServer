@@ -71,26 +71,6 @@ def build():
         if os.path.exists(exe_path):
             print(f"Artifact created: {exe_path}")
             print(f"Size: {os.path.getsize(exe_path) / 1024 / 1024:.2f} MB")
-            try:
-                bench_out = os.path.join(dist_dir, "startup_benchmark.json")
-                subprocess.run(
-                    [exe_path, "--benchmark-startup", "--benchmark-output", bench_out],
-                    check=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=60,
-                )
-                if os.path.exists(bench_out):
-                    import json
-                    with open(bench_out, "r", encoding="utf-8") as f:
-                        payload = json.load(f) if f else {}
-                    if isinstance(payload, dict) and payload.get("ok") is True:
-                        print(f"Startup benchmark: {payload.get('elapsed_ms')} ms")
-                    else:
-                        print("Startup benchmark: failed (see startup_benchmark.json)")
-            except Exception:
-                logger.exception("启动耗时基准采集失败")
         else:
             print(f"Error: Expected artifact not found at {exe_path}")
             
@@ -100,7 +80,7 @@ def build():
 
 if __name__ == "__main__":
     if check_requirements():
-        # clean_build_artifacts() # 可选：默认不清理，利用缓存加速
+        clean_build_artifacts()
         build()
     else:
         sys.exit(1)

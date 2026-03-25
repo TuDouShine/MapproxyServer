@@ -85,6 +85,17 @@ class MapProxyServer:
         self.print_step(f"初始化工作目录: {self.work_dir}")
         self.config_mgr.init_configs()
         
+        # Generate MapProxy Configs from map_config.json
+        try:
+            from config_generator import ConfigGenerator
+            self.logger.info("Generating MapProxy configuration from map_config.json...")
+            map_config = self.config_mgr.load_map_config()
+            generator = ConfigGenerator(self.work_dir, map_config)
+            generator.write_configs()
+            self.logger.info("Configuration generation completed.")
+        except Exception as e:
+            self.logger.error(f"Configuration generation failed: {e}")
+
         # Load advanced settings and inject into environment for SeedManager
         try:
             adv_config = self.config_mgr.load_advanced_config()

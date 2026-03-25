@@ -2135,7 +2135,7 @@ class LauncherApp:
         try:
             self.config_mgr.validate_mapproxy_config()
         except Exception as e:
-            if not messagebox.askyesno("配置验证警告", f"MapProxy 配置验证失败:\n{e}\n\n是否仍要尝试启动服务?"):
+            if not messagebox.askyesno("配置验证警告", f"MapProxy 配置验证失败:\n{e}\n\n是否仍要尝试启动服务?", parent=self.root):
                 return
             
         port = int(self.port_var.get())
@@ -2143,7 +2143,7 @@ class LauncherApp:
         host_value = self.host_var.get().strip()
         
         if is_port_in_use(port, host_value):
-             messagebox.showerror("错误", f"端口 {port} 已被占用")
+             messagebox.showerror("错误", f"端口 {port} 已被占用", parent=self.root)
              return
         
         selection = self.python_path_var.get()
@@ -2192,6 +2192,19 @@ class LauncherApp:
         try:
             # Prepare Environment Variables
             env = os.environ.copy()
+            
+            # Proxy Support
+            try:
+                map_config = self.config_mgr.load_map_config()
+                http_cfg = map_config.get("system", {}).get("http", {})
+                proxy_url = http_cfg.get("proxy", "").strip()
+                if proxy_url:
+                    env["HTTP_PROXY"] = proxy_url
+                    env["HTTPS_PROXY"] = proxy_url
+                    self.log(f"已启用代理: {proxy_url}", "info")
+            except Exception:
+                pass
+
             seed_settings = self.config_mgr.load_advanced_config()
             env["MAPPROXY_SEED_CONCURRENCY"] = str(seed_settings.get("concurrency", 2))
             
@@ -2287,6 +2300,9 @@ class LauncherApp:
                         self.set_status("运行成功", "green", url_part)
                     except Exception:
                         logging.exception("日志解析失败(请访问)")
+                elif self.service_process and "Configuration generation completed." in msg:
+                    # 配置文件重新生成后，同步更新图层列表
+                    self.load_layers()
 
         # 停止时不读取 server.log 以避免误判
         if self.service_process:
@@ -2505,7 +2521,7 @@ class LauncherApp:
         """窗口关闭事件处理"""
         # 仅当持有服务进程句柄时才提示停止
         if self.service_process:
-            if messagebox.askokcancel("退出", "服务正在运行，确定要停止服务并退出吗？"):
+            if messagebox.askokcancel("退出", "服务正在运行，确定要停止服务并退出吗？", parent=self.root):
                 self.stop_service()
                 self.root.destroy()
         else:
