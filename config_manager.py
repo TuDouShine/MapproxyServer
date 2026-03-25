@@ -293,7 +293,7 @@ class ConfigManager:
                 "smart_switch": False,
                 "description": "开启后：中国境内使用天地图，境外使用Global源；关闭后：仅使用Global源",
                 "offline_mode": False,
-                "mbtiles_path": "./data/map_cache.mbtiles"
+                "cache_dir": "./cache_data"
             },
             "seeding": {
                 "tasks": seeding_tasks
@@ -406,7 +406,13 @@ class ConfigManager:
         except Exception:
             self.logger.exception("Failed to apply hot reload for config")
 
-    def update_map_config(self, launcher_update: dict | None = None, advanced_update: dict | None = None, source: str = "unknown") -> dict:
+    def update_map_config(self, 
+                          launcher_update: dict | None = None, 
+                          advanced_update: dict | None = None, 
+                          http_update: dict | None = None,
+                          sources_update: dict | None = None,
+                          features_update: dict | None = None,
+                          source: str = "unknown") -> dict:
         self._ensure_dirs()
         old_cfg = self.load_map_config()
         new_cfg = dict(old_cfg)
@@ -414,10 +420,16 @@ class ConfigManager:
         # Ensure V2 structure exists
         if "system" not in new_cfg:
             new_cfg["system"] = {}
+        if "http" not in new_cfg["system"]:
+            new_cfg["system"]["http"] = {}
         if "gui_state" not in new_cfg:
             new_cfg["gui_state"] = {}
         if "advanced_settings" not in new_cfg:
             new_cfg["advanced_settings"] = {}
+        if "sources" not in new_cfg:
+            new_cfg["sources"] = {}
+        if "features" not in new_cfg:
+            new_cfg["features"] = {}
 
         if launcher_update is not None:
             if not isinstance(launcher_update, dict):
@@ -448,6 +460,24 @@ class ConfigManager:
             # Sync concurrency to system
             if "concurrency" in advanced_update:
                  new_cfg["system"]["concurrency"] = advanced_update["concurrency"]
+
+        if http_update is not None:
+            if not isinstance(http_update, dict):
+                raise ValueError("http_update 必须为对象")
+            for k, v in http_update.items():
+                new_cfg["system"]["http"][k] = v
+
+        if sources_update is not None:
+            if not isinstance(sources_update, dict):
+                raise ValueError("sources_update 必须为对象")
+            for k, v in sources_update.items():
+                new_cfg["sources"][k] = v
+
+        if features_update is not None:
+            if not isinstance(features_update, dict):
+                raise ValueError("features_update 必须为对象")
+            for k, v in features_update.items():
+                new_cfg["features"][k] = v
 
         old_version = old_cfg.get("version") if isinstance(old_cfg.get("version"), int) else 1
         new_cfg["version"] = int(old_version) + 1

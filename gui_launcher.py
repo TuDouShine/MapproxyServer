@@ -1214,7 +1214,24 @@ class LauncherApp:
         """将 cache_data 打包为 zip（通过 toast 提示 loading/success/error）。"""
         seed_name_safe = re.sub(r"[^A-Za-z0-9_\\-]+", "_", str(seed_name))[:64] or "seed"
         work_dir = get_work_dir()
+        
+        # Read cache_dir from map_config.json
         cache_dir = os.path.join(work_dir, "cache_data")
+        map_config_path = os.path.join(work_dir, "mapproxy_config", "map_config.json")
+        if os.path.exists(map_config_path):
+            try:
+                import json
+                with open(map_config_path, 'r', encoding='utf-8') as f:
+                    map_cfg = json.load(f)
+                    cache_dir_val = map_cfg.get("features", {}).get("cache_dir")
+                    if cache_dir_val:
+                        if os.path.isabs(cache_dir_val):
+                            cache_dir = cache_dir_val
+                        else:
+                            cache_dir = os.path.normpath(os.path.join(work_dir, cache_dir_val))
+            except Exception:
+                pass
+                
         output_dir = os.path.join(work_dir, "packaged_tiles")
 
         if seed_name in self._seed_packaging:

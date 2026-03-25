@@ -1,7 +1,7 @@
 seeds:
   default_seed_task:
     caches:
-    - arcgis_satellite_cache
+    - default_seed_task_cache
     grids:
     - webmercator
     coverages:

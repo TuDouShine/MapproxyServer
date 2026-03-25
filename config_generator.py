@@ -30,6 +30,12 @@ class ConfigGenerator:
         sources_cfg = self.map_config.get("sources", {})
         features_cfg = self.map_config.get("features", {})
         
+        # 将 cache_dir 视为相对于 work_dir 的路径，并转换为绝对路径
+        cache_dir_raw = features_cfg.get("cache_dir", "./cache_data")
+        if not os.path.isabs(cache_dir_raw):
+            cache_dir_raw = os.path.join(self.work_dir, cache_dir_raw)
+        cache_dir = os.path.normpath(cache_dir_raw).replace("\\", "/")
+        
         # 1. 定义基础结构
         config = {
             "services": {
@@ -52,8 +58,8 @@ class ConfigGenerator:
             },
             "globals": {
                 "cache": {
-                    "base_dir": "./cache_data",
-                    "lock_dir": "./cache_data/locks"
+                    "base_dir": cache_dir,
+                    "lock_dir": f"{cache_dir}/locks"
                 },
                 "image": {
                     "resampling_method": "bicubic"
@@ -126,7 +132,7 @@ class ConfigGenerator:
 
         # 3. 配置 Caches
         offline_mode = features_cfg.get("offline_mode", False)
-        mbtiles_path = features_cfg.get("mbtiles_path", "./data/map_cache.mbtiles")
+        mbtiles_filepath = os.path.join(cache_dir, "map_cache.mbtiles").replace("\\", "/")
 
         def create_cache_def(is_offline, mbtiles_filepath, directory_path, cache_sources):
             c_def = {
@@ -176,9 +182,8 @@ class ConfigGenerator:
                 task_sources = add_sources_for_target(task_name, min_res, max_res)
                 
                 # 动态生成各个任务的文件路径
-                mbtiles_dir = os.path.dirname(mbtiles_path) if mbtiles_path else "./data"
-                task_mbtiles_path = os.path.join(mbtiles_dir, f"{task_name}.mbtiles").replace("\\", "/")
-                task_dir_path = f"./cache_data/{task_name}"
+                task_mbtiles_path = os.path.join(cache_dir, f"{task_name}.mbtiles").replace("\\", "/")
+                task_dir_path = f"{cache_dir}/{task_name}"
                 
                 config["caches"][task_cache_name] = create_cache_def(
                     offline_mode,
@@ -215,8 +220,8 @@ class ConfigGenerator:
             
             config["caches"][self.CACHE_NAME] = create_cache_def(
                 offline_mode, 
-                mbtiles_path, 
-                "./cache_data/arcgis_satellite",
+                mbtiles_filepath, 
+                f"{cache_dir}/arcgis_satellite",
                 default_sources
             )
             
@@ -268,7 +273,7 @@ class ConfigGenerator:
                 }
                 
                 # Zoom Levels
-                levels = task.get("zoom_levels", [0, 8])
+                levels = task.get("zoom_levels", [0, 3])
                 
                 # Refresh Time (Optional)
                 refresh_time = task.get("refresh_before")
@@ -298,7 +303,7 @@ class ConfigGenerator:
         if not enabled:
             return config
 
-        zoom_levels = seeding_cfg.get("zoom_levels", [0, 8])
+        zoom_levels = seeding_cfg.get("zoom_levels", [0, 3])
         bbox = seeding_cfg.get("bbox", self.CHINA_BBOX)
         
         # 构造一个通用的 seed 任务
