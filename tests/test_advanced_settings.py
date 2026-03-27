@@ -10,9 +10,9 @@ from datetime import datetime
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config_manager import ConfigManager
-from seed_manager import SeedManager
-from utils import cleanup_empty_legacy_launcher_dir_in_cwd
+from src.core.config_manager import ConfigManager
+from src.core.seed_manager import SeedManager
+from src.utils.utils import cleanup_empty_legacy_launcher_dir_in_cwd
 
 class TestAdvancedSettings(unittest.TestCase):
     def setUp(self):
@@ -87,10 +87,9 @@ class TestAdvancedSettings(unittest.TestCase):
             map_cfg = json.load(f)
         self.assertIn("version", map_cfg)
         self.assertGreaterEqual(int(map_cfg.get("version", 0)), 2)
-        self.assertIn("launcher_config", map_cfg)
-        self.assertNotIn("python_path", map_cfg.get("launcher_config", {}))
-        self.assertNotIn("selection_label", map_cfg.get("launcher_config", {}))
-        self.assertNotIn("host", map_cfg.get("launcher_config", {}))
+        self.assertIn("system", map_cfg)
+        self.assertNotIn("python_path", map_cfg.get("launcher_config", {})) # Legacy check
+        self.assertIn("python_path", map_cfg.get("system", {}))
 
         with open(legacy_launcher_path, "r", encoding="utf-8") as f:
             self.assertEqual(f.read(), legacy_launcher_before)
@@ -150,15 +149,15 @@ class TestAdvancedSettings(unittest.TestCase):
             shutil.rmtree(work_dir, ignore_errors=True)
             shutil.rmtree(project_root, ignore_errors=True)
 
-    def test_init_configs_copies_migrated_yaml_into_workdir(self):
-        """验证 init_configs 会把项目内 mapproxy_config 下的 YAML 初始化到工作目录。"""
+    def test_init_configs_copies_configs_yaml_into_workdir(self):
+        """验证 init_configs 会把项目内 configs 下的 YAML 初始化到工作目录。"""
         work_dir = tempfile.mkdtemp()
         project_root = tempfile.mkdtemp()
         try:
-            os.makedirs(os.path.join(project_root, "mapproxy_config"), exist_ok=True)
-            with open(os.path.join(project_root, "mapproxy_config", "mapproxy.yaml"), "w", encoding="utf-8") as f:
+            os.makedirs(os.path.join(project_root, "configs"), exist_ok=True)
+            with open(os.path.join(project_root, "configs", "mapproxy.yaml"), "w", encoding="utf-8") as f:
                 f.write("services:\n  demo:\n")
-            with open(os.path.join(project_root, "mapproxy_config", "mapproxy-seed.yaml"), "w", encoding="utf-8") as f:
+            with open(os.path.join(project_root, "configs", "mapproxy-seed.yaml"), "w", encoding="utf-8") as f:
                 f.write("seeds:\n  t1:\n    caches: []\n    grids: []\n")
 
             mgr = ConfigManager(work_dir, project_root)
@@ -305,6 +304,52 @@ class TestAdvancedSettings(unittest.TestCase):
         self.config_mgr.save_launcher_config(launcher_payload, source="test_service_cfg_2")
         svc2 = self.config_mgr.get_service_config()
         self.assertEqual(svc2.get("host"), "127.0.0.1")
+
+    def test_update_map_config_persists_seeding_tasks(self):
+        """验证 update_map_config 支持写入 seeding.tasks。"""
+        seeding_update = {
+            "tasks": [
+                {
+                    "name": "city_core",
+                    "zoom_levels": [2, 10],
+                    "bbox": [116.1, 39.7, 116.8, 40.2],
+                    "refresh_before": "2026-01-01T00:00:00",
+                },
+                {
+                    "name": "city_suburb",
+                    "zoom_levels": [0, 8],
+                    "bbox": [115.5, 39.3, 117.3, 40.6],
+                    "refresh_before": "2026-02-01T00:00:00",
+                },
+            ]
+        }
+        updated = self.config_mgr.update_map_config(
+            seeding_update=seeding_update,
+            source="test_update_seeding",
+        )
+        self.assertEqual(updated["seeding"]["tasks"][0]["name"], "city_core")
+        self.assertEqual(updated["seeding"]["tasks"][1]["zoom_levels"], [0, 8])
+
+        with open(os.path.join(self.test_dir, "mapproxy_config", "map_config.json"), "r", encoding="utf-8") as f:
+            persisted = json.load(f)
+        self.assertEqual(persisted["seeding"]["tasks"][0]["bbox"], [116.1, 39.7, 116.8, 40.2])
+
+    def test_update_map_config_rejects_invalid_seeding_tasks(self):
+        """验证 seeding.tasks 字段非法时会抛出异常。"""
+        with self.assertRaises(ValueError):
+            self.config_mgr.update_map_config(
+                seeding_update={
+                    "tasks": [
+                        {
+                            "name": "bad task",
+                            "zoom_levels": [8, 2],
+                            "bbox": [200, 0, 210, 10],
+                            "refresh_before": "bad",
+                        }
+                    ]
+                },
+                source="test_invalid_seeding",
+            )
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,10 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, os.pardir))
+SPEC_PATH = os.path.join(SCRIPT_DIR, 'build.spec')
+
 def check_requirements():
     """检查构建环境"""
     print("Checking build requirements...")
@@ -37,18 +41,21 @@ def clean_build_artifacts():
     """清理之前的构建产物"""
     dirs_to_clean = ['build', 'dist']
     for d in dirs_to_clean:
-        if os.path.exists(d):
-            print(f"Cleaning {d}...")
-            shutil.rmtree(d)
+        abs_dir = os.path.join(PROJECT_ROOT, d)
+        if os.path.exists(abs_dir):
+            print(f"Cleaning {abs_dir}...")
+            shutil.rmtree(abs_dir)
 
 def build():
     """执行打包"""
     system = platform.system()
     print(f"\nStarting build for {system}...")
-    
-    # 基础命令
-    # 使用 sys.executable 确保调用的是当前环境的 PyInstaller
-    cmd = [sys.executable, '-m', 'PyInstaller', 'build.spec', '--clean', '--noconfirm']
+
+    if not os.path.exists(SPEC_PATH):
+        logger.error(f"未找到构建配置文件: {SPEC_PATH}")
+        sys.exit(1)
+
+    cmd = [sys.executable, '-m', 'PyInstaller', SPEC_PATH, '--clean', '--noconfirm']
     
     # 根据平台调整 (目前 build.spec 已包含大部分逻辑，这里作为扩展点)
     if system == 'Linux':
@@ -58,11 +65,11 @@ def build():
         print("  - Target: Windows Executable (.exe)")
     
     try:
-        subprocess.check_call(cmd)
+        subprocess.check_call(cmd, cwd=PROJECT_ROOT)
         print("\nBuild successful!")
         
         # 验证输出
-        dist_dir = os.path.join(os.getcwd(), 'dist')
+        dist_dir = os.path.join(PROJECT_ROOT, 'dist')
         exe_name = 'MapProxyLauncher'
         if system == 'Windows':
             exe_name += '.exe'

@@ -15,8 +15,8 @@ def get_base_dir():
         # 如果是打包后的 exe，基准目录是 exe 所在目录
         return os.path.dirname(sys.executable)
     else:
-        # 如果是脚本运行，基准目录是脚本所在目录
-        return os.path.dirname(os.path.abspath(__file__))
+        # 如果是脚本运行，基准目录是项目根目录（当前文件上两级）
+        return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def get_user_data_dir(app_dir_name: str = LAUNCHER_DIR_NAME) -> str:
     """获取用户数据目录（优先使用 Windows 的 LocalAppData/AppData）。"""

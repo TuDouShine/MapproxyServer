@@ -3,7 +3,7 @@ import os
 import unittest
 import shutil
 
-from config_manager import ConfigManager
+from src.core.config_manager import ConfigManager
 
 class TestConfigManager(unittest.TestCase):
     def setUp(self):

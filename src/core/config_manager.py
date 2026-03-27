@@ -5,7 +5,7 @@ import shutil
 import sys
 import tempfile
 from datetime import datetime, timezone, timedelta, tzinfo
-from utils import load_json
+from src.utils.utils import load_json
 
 class ConfigManager:
     def __init__(self, work_dir, project_root):
@@ -205,6 +205,62 @@ class ConfigManager:
         if not isinstance(alert.get("enabled"), bool):
             raise ValueError("alert.enabled 必须为布尔值")
 
+    def validate_seeding_config(self, config: dict) -> None:
+        """校验 seeding 配置结构与字段合法性。"""
+        if not isinstance(config, dict):
+            raise ValueError("seeding 配置必须为对象")
+        tasks = config.get("tasks")
+        if not isinstance(tasks, list):
+            raise ValueError("seeding.tasks 必须为数组")
+        names = set()
+        for idx, task in enumerate(tasks):
+            if not isinstance(task, dict):
+                raise ValueError(f"seeding.tasks[{idx}] 必须为对象")
+            name = str(task.get("name", "")).strip()
+            if not name:
+                raise ValueError(f"seeding.tasks[{idx}].name 不能为空")
+            if not all(ch.isalnum() or ch == "_" for ch in name):
+                raise ValueError(f"seeding.tasks[{idx}].name 仅支持字母数字下划线")
+            if name in names:
+                raise ValueError(f"seeding.tasks 任务名重复: {name}")
+            names.add(name)
+
+            zoom_levels = task.get("zoom_levels")
+            if not isinstance(zoom_levels, list) or len(zoom_levels) != 2:
+                raise ValueError(f"seeding.tasks[{idx}].zoom_levels 必须为长度为2的数组")
+            try:
+                zoom_from = int(zoom_levels[0])
+                zoom_to = int(zoom_levels[1])
+            except Exception:
+                raise ValueError(f"seeding.tasks[{idx}].zoom_levels 必须为整数")
+            if zoom_from < 0 or zoom_to < 0 or zoom_from > zoom_to:
+                raise ValueError(f"seeding.tasks[{idx}].zoom_levels 范围无效")
+
+            bbox = task.get("bbox")
+            if not isinstance(bbox, list) or len(bbox) != 4:
+                raise ValueError(f"seeding.tasks[{idx}].bbox 必须为长度为4的数组")
+            try:
+                minx = float(bbox[0])
+                miny = float(bbox[1])
+                maxx = float(bbox[2])
+                maxy = float(bbox[3])
+            except Exception:
+                raise ValueError(f"seeding.tasks[{idx}].bbox 必须为数字")
+            if minx >= maxx or miny >= maxy:
+                raise ValueError(f"seeding.tasks[{idx}].bbox 范围无效")
+            if minx < -180 or maxx > 180:
+                raise ValueError(f"seeding.tasks[{idx}].bbox 经度范围无效")
+            if miny < -90 or maxy > 90:
+                raise ValueError(f"seeding.tasks[{idx}].bbox 纬度范围无效")
+
+            refresh_before = str(task.get("refresh_before", "")).strip()
+            if not refresh_before:
+                raise ValueError(f"seeding.tasks[{idx}].refresh_before 不能为空")
+            try:
+                datetime.fromisoformat(refresh_before)
+            except Exception:
+                raise ValueError(f"seeding.tasks[{idx}].refresh_before 格式无效")
+
     def _load_legacy_launcher_config_raw(self) -> dict:
         raw = load_json(self.config_json_path)
         return raw if isinstance(raw, dict) else {}
@@ -256,12 +312,13 @@ class ConfigManager:
                      "bbox": seeding_legacy.get("bbox", [73, 18, 135, 54]),
                      "refresh_before": "2026-01-01T00:00:00"
                  })
-        else:
-             # Default seeding task if none existed
+        
+        # Ensure default global seeding task if empty
+        if not seeding_tasks:
              seeding_tasks.append({
-                 "name": "default_seed_task",
-                 "zoom_levels": [0, 8],
-                 "bbox": [73, 18, 135, 54],
+                 "name": "global_low_zoom",
+                 "zoom_levels": [0, 5],
+                 "bbox": [-180.0, -90.0, 180.0, 90.0],
                  "refresh_before": "2026-01-01T00:00:00"
              })
 
@@ -271,7 +328,7 @@ class ConfigManager:
             "system": {
                 "host": host,
                 "port": launcher.get("port", 8080),
-                "concurrency": adv.get("concurrency", 2),
+                "concurrency": adv.get("concurrency", 4),
                 "python_path": launcher.get("python_path", "Internal"),
                 "allow_external_access": allow_external,
                 "waitress_threads": launcher.get("waitress_threads", 16),
@@ -292,7 +349,7 @@ class ConfigManager:
             "features": {
                 "smart_switch": False,
                 "description": "开启后：中国境内使用天地图，境外使用Global源；关闭后：仅使用Global源",
-                "offline_mode": False,
+                "offline_mode": True,
                 "cache_dir": "./cache_data"
             },
             "seeding": {
@@ -323,6 +380,9 @@ class ConfigManager:
         # Basic type checks for system
         if not isinstance(system.get("port"), int):
             raise ValueError("system.port 必须为整数")
+        seeding = config.get("seeding")
+        if seeding is not None:
+            self.validate_seeding_config(seeding)
 
     def load_map_config(self) -> dict:
         if not os.path.exists(self.map_config_path):
@@ -394,7 +454,7 @@ class ConfigManager:
             if not isinstance(adv, dict):
                 return
             adv = self._normalize_advanced_config(adv)
-            os.environ["MAPPROXY_SEED_CONCURRENCY"] = str(adv.get("concurrency", 2))
+            os.environ["MAPPROXY_SEED_CONCURRENCY"] = str(adv.get("concurrency", 4))
             retry = adv.get("retry", {})
             if isinstance(retry, dict) and bool(retry.get("enabled", False)):
                 os.environ["MAPPROXY_SEED_MAX_RETRIES"] = str(int(retry.get("max_retries", 2)))
@@ -412,6 +472,7 @@ class ConfigManager:
                           http_update: dict | None = None,
                           sources_update: dict | None = None,
                           features_update: dict | None = None,
+                          seeding_update: dict | None = None,
                           source: str = "unknown") -> dict:
         self._ensure_dirs()
         old_cfg = self.load_map_config()
@@ -430,6 +491,8 @@ class ConfigManager:
             new_cfg["sources"] = {}
         if "features" not in new_cfg:
             new_cfg["features"] = {}
+        if "seeding" not in new_cfg:
+            new_cfg["seeding"] = {"tasks": []}
 
         if launcher_update is not None:
             if not isinstance(launcher_update, dict):
@@ -479,6 +542,12 @@ class ConfigManager:
             for k, v in features_update.items():
                 new_cfg["features"][k] = v
 
+        if seeding_update is not None:
+            if not isinstance(seeding_update, dict):
+                raise ValueError("seeding_update 必须为对象")
+            self.validate_seeding_config(seeding_update)
+            new_cfg["seeding"] = dict(seeding_update)
+
         old_version = old_cfg.get("version") if isinstance(old_cfg.get("version"), int) else 1
         new_cfg["version"] = int(old_version) + 1
         new_cfg["updated_at"] = self._now_iso()
@@ -527,13 +596,15 @@ class ConfigManager:
         except Exception:
             self.logger.exception("Failed to create mapproxy_config directory in work_dir")
 
-        config_src_dir = os.path.join(self.project_root, "mapproxy_config")
+        config_src_dir = self._resolve_config_source_dir()
         config_files = [
             ("mapproxy.yaml", self.mapproxy_yaml_path),
             ("mapproxy-seed.yaml", self.seed_yaml_path),
         ]
+        if not config_src_dir:
+            self.logger.warning("No default config source directory found under project_root.")
         for filename, dst in config_files:
-            src = os.path.join(config_src_dir, filename)
+            src = os.path.join(config_src_dir, filename) if config_src_dir else ""
             if os.path.exists(src) and not os.path.exists(dst):
                 try:
                     shutil.copy2(src, dst)
@@ -545,6 +616,17 @@ class ConfigManager:
             self.ensure_map_config_exists(source="config_manager.init_configs")
         except Exception:
             self.logger.exception("Failed to initialize map_config.json")
+
+    def _resolve_config_source_dir(self):
+        """Resolve default config template directory under project root."""
+        candidates = [
+            os.path.join(self.project_root, "configs"),
+            os.path.join(self.project_root, "mapproxy_config"),
+        ]
+        for path in candidates:
+            if os.path.isdir(path):
+                return path
+        return None
 
     def load_launcher_config(self):
         """Load GUI launcher config (Adapter for V2)"""
@@ -602,7 +684,7 @@ class ConfigManager:
     def get_default_advanced_config(self):
         """Get default advanced settings"""
         return {
-            "concurrency": 2,
+            "concurrency": 4,
             "retry": {
                 "enabled": False,
                 "max_retries": 2,
@@ -632,7 +714,8 @@ class ConfigManager:
     def save_launcher_config(self, config_data, source: str = "launcher"):
         """Save GUI launcher config"""
         self.validate_launcher_config(config_data)
-        self.update_map_config(launcher_update=config_data, source=source)
+        advanced_update = config_data.get("seed_settings")
+        self.update_map_config(launcher_update=config_data, advanced_update=advanced_update, source=source)
 
     def validate_launcher_config(self, config):
         """Validate launcher configuration"""

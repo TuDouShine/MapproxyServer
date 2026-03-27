@@ -96,3 +96,6 @@ seed_status.json
 .env
 config_local.py
 
+# Test work directory
+tests/
+

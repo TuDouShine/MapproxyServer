@@ -2,12 +2,12 @@ import os
 import sys
 import argparse
 import logging
-from utils import setup_logging, get_base_dir, get_work_dir
-from env_manager import EnvManager
-from dependency_manager import DependencyManager
-from service_runner import ServiceRunner
-from seed_orchestrator import SeedOrchestrator
-from config_manager import ConfigManager
+from src.utils.utils import setup_logging, get_base_dir, get_work_dir
+from src.core.env_manager import EnvManager
+from src.core.dependency_manager import DependencyManager
+from src.core.service_runner import ServiceRunner
+from src.core.seed_orchestrator import SeedOrchestrator
+from src.core.config_manager import ConfigManager
 
 class MapProxyServer:
     def __init__(self, work_dir=None):
@@ -23,7 +23,7 @@ class MapProxyServer:
         
         # 3. Initialize Managers
         self.config_mgr = ConfigManager(self.work_dir, self.project_root)
-        self.env_mgr = EnvManager(self.work_dir)
+        self.env_mgr = EnvManager(self.project_root)
         self.seed_orch = SeedOrchestrator(self.work_dir)
         # ServiceRunner and DependencyManager need more info later (python path) or initialized later
 
@@ -74,7 +74,7 @@ class MapProxyServer:
             self.work_dir = os.path.abspath(args.work_dir)
             # Re-initialize managers with new work_dir
             self.config_mgr = ConfigManager(self.work_dir, self.project_root)
-            self.env_mgr = EnvManager(self.work_dir)
+            self.env_mgr = EnvManager(self.project_root)
             self.seed_orch = SeedOrchestrator(self.work_dir)
             self.logs_dir = os.path.join(self.work_dir, "logs")
             self.logger = setup_logging(os.path.join(self.logs_dir, "server.log"), "MapProxyServer")
@@ -87,7 +87,7 @@ class MapProxyServer:
         
         # Generate MapProxy Configs from map_config.json
         try:
-            from config_generator import ConfigGenerator
+            from src.core.config_generator import ConfigGenerator
             self.logger.info("Generating MapProxy configuration from map_config.json...")
             map_config = self.config_mgr.load_map_config()
             generator = ConfigGenerator(self.work_dir, map_config)
@@ -102,7 +102,7 @@ class MapProxyServer:
             
             # Concurrency
             if "MAPPROXY_SEED_CONCURRENCY" not in os.environ:
-                os.environ["MAPPROXY_SEED_CONCURRENCY"] = str(adv_config.get("concurrency", 2))
+                os.environ["MAPPROXY_SEED_CONCURRENCY"] = str(adv_config.get("concurrency", 4))
                 
             # Retry
             retry = adv_config.get("retry", {})

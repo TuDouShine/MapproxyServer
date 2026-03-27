@@ -20,14 +20,13 @@ try:
 except ImportError:
     main = None # Should not happen in bundle, but safe for dev
 try:
-    import process_manager
+    import src.core.process_manager as process_manager
 except ImportError:
     process_manager = None
-from python_detector import find_python_interpreters
-from modules.ui.gui_seed_manager import show_seed_manager_dialog
-from modules.ui.gui_advancedsetting_manager import show_advanced_settings_dialog
-from utils import cleanup_empty_legacy_launcher_dir_in_cwd, get_base_dir, get_work_dir, is_port_in_use
-from config_manager import ConfigManager
+from src.core.python_detector import find_python_interpreters
+from src.ui.gui_advancedsetting_manager import show_advanced_settings_dialog
+from src.utils.utils import cleanup_empty_legacy_launcher_dir_in_cwd, get_base_dir, get_work_dir, is_port_in_use
+from src.core.config_manager import ConfigManager
 
 # 工作目录名称 (referenced from utils implicitly by get_work_dir, but we might need it for display or logic)
 LAUNCHER_DIR_NAME = "MapProxyLauncher"
@@ -792,9 +791,6 @@ class LauncherApp:
         
         self.btn_save = ttk.Button(config_line, text="保存配置", command=self.save_config)
         self.btn_save.pack(side=tk.RIGHT, padx=(8, 0))
-        
-        self.btn_seed = ttk.Button(config_line, text="切片预生成", command=lambda: show_seed_manager_dialog(self.root))
-        self.btn_seed.pack(side=tk.RIGHT, padx=(8, 0))
 
         # Line 2: Start/Stop Buttons (Compact Group)
         control_line = ttk.Frame(frame_config, padding=(0, 16))
@@ -1586,6 +1582,45 @@ class LauncherApp:
         except Exception:
             pass
 
+    def _resolve_ui_font_families(self) -> tuple[str, str]:
+        """解析当前平台的 UI 字体族，非 Windows 使用通用字体回退。"""
+        if os.name == "nt":
+            return ("Microsoft YaHei", "Consolas")
+
+        body_candidates = [
+            "Noto Sans CJK SC",
+            "Noto Sans",
+            "Arial",
+            "Helvetica",
+            "sans-serif",
+        ]
+        mono_candidates = [
+            "Noto Sans Mono CJK SC",
+            "DejaVu Sans Mono",
+            "Menlo",
+            "Monaco",
+            "monospace",
+        ]
+
+        body_family = "sans-serif"
+        mono_family = "monospace"
+        try:
+            available_families = {str(name) for name in tkfont.families(self.root)}
+        except Exception:
+            available_families = set()
+
+        if available_families:
+            for family in body_candidates:
+                if family in available_families:
+                    body_family = family
+                    break
+            for family in mono_candidates:
+                if family in available_families:
+                    mono_family = family
+                    break
+
+        return (body_family, mono_family)
+
     def adapt_ui_size(self, width: int) -> None:
         """根据屏幕宽度自适应调整字体与组件样式（仅视觉参数）。"""
         style = ttk.Style()
@@ -1611,12 +1646,13 @@ class LauncherApp:
             mono_font_size = -18
         log_mono_font_size = -16
 
+        body_font_family, mono_font_family = self._resolve_ui_font_families()
         self._ui_fonts = {
-            "body": ("Microsoft YaHei", base_font_size, "normal"),
-            "subtitle": ("Microsoft YaHei", base_font_size, "bold"),
-            "title": ("Microsoft YaHei", title_font_size, "bold"),
-            "mono": ("Consolas", mono_font_size, "normal"),
-            "log_mono": ("Consolas", log_mono_font_size, "normal"),
+            "body": (body_font_family, base_font_size, "normal"),
+            "subtitle": (body_font_family, base_font_size, "bold"),
+            "title": (body_font_family, title_font_size, "bold"),
+            "mono": (mono_font_family, mono_font_size, "normal"),
+            "log_mono": (mono_font_family, log_mono_font_size, "normal"),
         }
 
         style.configure(".", font=self._ui_fonts["body"])
@@ -2223,7 +2259,7 @@ class LauncherApp:
                 pass
 
             seed_settings = self.config_mgr.load_advanced_config()
-            env["MAPPROXY_SEED_CONCURRENCY"] = str(seed_settings.get("concurrency", 2))
+            env["MAPPROXY_SEED_CONCURRENCY"] = str(seed_settings.get("concurrency", 4))
             
             retry_cfg = seed_settings.get("retry", {})
             if retry_cfg.get("enabled", False):
@@ -2961,4 +2997,3 @@ if __name__ == "__main__":
             tkinter.messagebox.showerror("Fatal Error", f"Application crashed. See launcher_crash.log for details.\n\n{str(e)}")
         except:
             pass # Failed to log or show message
-

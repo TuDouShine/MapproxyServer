@@ -9,13 +9,18 @@ import platform
 # 获取 mapproxy 的安装路径
 import mapproxy
 mapproxy_path = os.path.dirname(mapproxy.__file__)
+spec_dir = os.path.abspath(globals().get('SPECPATH', os.getcwd()))
+project_root = os.path.abspath(os.path.join(spec_dir, os.pardir))
+entry_script = os.path.join(project_root, 'src', 'ui', 'gui_launcher.py')
+configs_dir = os.path.join(project_root, 'configs')
+requirements_file = os.path.join(project_root, 'requirements.txt')
 
 block_cipher = None
 
 # 需要打包的所有数据文件
 datas = [
-    ('mapproxy_config', 'mapproxy_config'),
-    ('requirements.txt', '.'),
+    (configs_dir, 'mapproxy_config'),
+    (requirements_file, '.'),
     # 显式包含 MapProxy 的配置文件和模板
     (os.path.join(mapproxy_path, 'config', 'config-schema.json'), os.path.join('mapproxy', 'config')),
     (os.path.join(mapproxy_path, 'service', 'templates'), os.path.join('mapproxy', 'service', 'templates')),
@@ -55,8 +60,8 @@ excludes = [
 ]
 
 a = Analysis(
-    ['gui_launcher.py'],
-    pathex=[],
+    [entry_script],
+    pathex=[project_root],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,

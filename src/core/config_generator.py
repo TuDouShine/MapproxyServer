@@ -131,7 +131,7 @@ class ConfigGenerator:
             return sources_list
 
         # 3. 配置 Caches
-        offline_mode = features_cfg.get("offline_mode", False)
+        offline_mode = features_cfg.get("offline_mode", True)
         mbtiles_filepath = os.path.join(cache_dir, "map_cache.mbtiles").replace("\\", "/")
 
         def create_cache_def(is_offline, mbtiles_filepath, directory_path, cache_sources):

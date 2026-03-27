@@ -1,7 +1,7 @@
 import os
 import subprocess
 import logging
-from utils import calculate_file_hash, load_json, save_json
+from src.utils.utils import calculate_file_hash, load_json, save_json
 
 REQUIREMENTS_CONTENT = """MapProxy>=1.15.1
 Waitress>=2.1.2

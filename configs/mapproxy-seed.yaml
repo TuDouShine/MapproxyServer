@@ -1,21 +1,21 @@
 seeds:
-  default_seed_task:
+  global_low_zoom:
     caches:
-    - default_seed_task_cache
+    - global_low_zoom_cache
     grids:
     - webmercator
     coverages:
-    - default_seed_task_bbox
+    - global_low_zoom_bbox
     levels:
       from: 0
-      to: 8
+      to: 5
     refresh_before:
       time: '2026-01-01T00:00:00'
 coverages:
-  default_seed_task_bbox:
+  global_low_zoom_bbox:
     bbox:
-    - 73
-    - 18
-    - 135
-    - 54
+    - -180.0
+    - -90.0
+    - 180.0
+    - 90.0
     bbox_srs: EPSG:4326
