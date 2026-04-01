@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 import logging
 from src.utils.utils import calculate_file_hash, load_json, save_json
@@ -18,7 +19,13 @@ class DependencyManager:
         self.logger = logging.getLogger("DependencyManager")
         
         self.packages_dir = os.path.join(self.work_dir, "packages")
-        self.req_file = os.path.join(self.work_dir, "requirements.txt")
+        # 冻结模式下优先使用打包在程序中的 requirements.txt，而不在工作目录生成同名文件
+        if getattr(sys, "frozen", False):
+            base_path = getattr(sys, "_MEIPASS", None)
+            bundled_req = os.path.join(base_path, "requirements.txt") if base_path else None
+            self.req_file = bundled_req if bundled_req and os.path.exists(bundled_req) else os.path.join(self.work_dir, "requirements.txt")
+        else:
+            self.req_file = os.path.join(self.work_dir, "requirements.txt")
         self.mapproxy_config_dir = os.path.join(self.work_dir, "mapproxy_config")
         self.deps_status_file = os.path.join(self.mapproxy_config_dir, "deps_status.json")
         
@@ -39,7 +46,10 @@ class DependencyManager:
                         os.remove(legacy_deps_status)
         except Exception:
             self.logger.exception("迁移 deps_status.json 失败")
-        self._ensure_requirements_file()
+
+        # 仅在非冻结模式下才在工作目录生成 requirements.txt，避免打包版暴露内部依赖文件
+        if not getattr(sys, "frozen", False):
+            self._ensure_requirements_file()
 
     def _ensure_requirements_file(self):
         if not os.path.exists(self.req_file):

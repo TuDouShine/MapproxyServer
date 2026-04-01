@@ -510,47 +510,13 @@ class SeedProgressCanvasView:
         return text[:cut] + ell
 
 def deploy_resources():
-    """将内嵌资源部署到工作目录"""
+    """初始化工作目录结构（不再复制内部配置和 requirements.txt 到工作目录）。"""
     work_dir = get_work_dir()
-    os.makedirs(work_dir, exist_ok=True)
-    
-    # 资源源目录
-    if getattr(sys, 'frozen', False):
-        source_dir = sys._MEIPASS
-    else:
-        source_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    files_to_copy = [
-        "mapproxy_config",
-        "requirements.txt",
-    ]
-    
-    for filename in files_to_copy:
-        src = os.path.join(source_dir, filename)
-        dst = os.path.join(work_dir, filename)
-        
-        if os.path.exists(src):
-            if os.path.isdir(src):
-                if not os.path.exists(dst):
-                    try:
-                        shutil.copytree(src, dst)
-                        logging.info(f"Deploying directory: {filename}")
-                    except Exception:
-                        logging.exception(f"Failed to deploy directory: {filename}")
-                continue
-
-            if filename.endswith(".yaml") or filename.endswith(".json") or filename == "requirements.txt":
-                if not os.path.exists(dst):
-                    try:
-                        shutil.copy2(src, dst)
-                        logging.info(f"Deploying config: {filename}")
-                    except Exception:
-                        logging.exception(f"Failed to deploy {filename}")
-            else:
-                try:
-                    shutil.copy2(src, dst)
-                except Exception:
-                    logging.exception(f"Failed to deploy {filename}")
+    # 这里仅确保工作目录存在，具体配置文件由 ConfigManager/DependencyManager 按需从包内模板初始化
+    try:
+        os.makedirs(work_dir, exist_ok=True)
+    except Exception:
+        logging.exception("Failed to create work_dir in deploy_resources")
 
 # AdvancedSettingsDialog class has been moved to modules/ui/gui_advancedsetting_manager.py
 

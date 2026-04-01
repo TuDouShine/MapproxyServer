@@ -590,7 +590,10 @@ class ConfigManager:
         return None
 
     def init_configs(self):
-        """Initialize configuration files in work directory"""
+        """Initialize configuration files in work directory.
+
+        模板优先从打包资源 (sys._MEIPASS 下的 mapproxy_config) 读取，只有在缺失时才回退到项目目录。
+        """
         try:
             os.makedirs(self.mapproxy_config_dir, exist_ok=True)
         except Exception:
@@ -602,7 +605,7 @@ class ConfigManager:
             ("mapproxy-seed.yaml", self.seed_yaml_path),
         ]
         if not config_src_dir:
-            self.logger.warning("No default config source directory found under project_root.")
+            self.logger.warning("No default config source directory found for mapproxy templates.")
         for filename, dst in config_files:
             src = os.path.join(config_src_dir, filename) if config_src_dir else ""
             if os.path.exists(src) and not os.path.exists(dst):
@@ -618,7 +621,24 @@ class ConfigManager:
             self.logger.exception("Failed to initialize map_config.json")
 
     def _resolve_config_source_dir(self):
-        """Resolve default config template directory under project root."""
+        """Resolve default config template directory.
+
+        冻结模式下优先使用打包到 sys._MEIPASS 下的 mapproxy_config，
+        否则回退到项目根目录下的 configs/mapproxy_config。
+        """
+        # 1. Frozen app: sys._MEIPASS/mapproxy_config
+        try:
+            if getattr(sys, "frozen", False):
+                base_path = getattr(sys, "_MEIPASS", None)
+                if base_path:
+                    bundle_dir = os.path.join(base_path, "mapproxy_config")
+                    if os.path.isdir(bundle_dir):
+                        return bundle_dir
+        except Exception:
+            # Best-effort; fall back to non-frozen search
+            self.logger.exception("Failed to resolve bundled mapproxy_config from sys._MEIPASS")
+
+        # 2. Project root (development / non-frozen)
         candidates = [
             os.path.join(self.project_root, "configs"),
             os.path.join(self.project_root, "mapproxy_config"),
