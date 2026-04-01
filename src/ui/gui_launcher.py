@@ -510,9 +510,9 @@ class SeedProgressCanvasView:
         return text[:cut] + ell
 
 def deploy_resources():
-    """初始化工作目录结构（不再复制内部配置和 requirements.txt 到工作目录）。"""
+    """初始化工作目录结构。冻结模式下不再复制内部资源到工作目录，由各管理器按需从包内模板初始化。"""
     work_dir = get_work_dir()
-    # 这里仅确保工作目录存在，具体配置文件由 ConfigManager/DependencyManager 按需从包内模板初始化
+    # 这里仅确保工作目录存在；冻结模式下的内部资源不在此处复制，由各管理器按需从包内模板初始化
     try:
         os.makedirs(work_dir, exist_ok=True)
     except Exception:
