@@ -1,6 +1,8 @@
 # config.py
 import os
 import yaml
+import tempfile
+import atexit
 from mapproxy.wsgiapp import make_wsgi_app
 
 # 配置文件路径
@@ -20,15 +22,28 @@ if os.environ.get('MAPPROXY_OFFLINE_MODE') == '1':
                 if 'sources' in cache_def:
                     cache_def['sources'] = []
                     
-        # 写入临时的离线配置文件
-        offline_conf = os.path.join(project_root, 'configs', 'mapproxy_offline.yaml')
-        with open(offline_conf, 'w', encoding='utf-8') as f:
-            yaml.dump(conf_dict, f, allow_unicode=True)
-            
-        mapproxy_conf = offline_conf
-        print("Using offline mode configuration (sources disabled).")
+        # 使用 tempfile 创建临时的离线配置文件，并在程序退出时自动删除
+        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')
+        yaml.dump(conf_dict, temp_file, allow_unicode=True)
+        temp_file.close()
+        
+        mapproxy_conf = temp_file.name
+        print(f"Using offline mode configuration: {mapproxy_conf}")
+        
+        # 注册清理函数
+        def _cleanup():
+            if os.path.exists(mapproxy_conf):
+                try:
+                    os.remove(mapproxy_conf)
+                except:
+                    pass
+        atexit.register(_cleanup)
+        
     except Exception as e:
-        print(f"Failed to generate offline configuration: {e}")
+        print("\n" + "!"*60)
+        print(f" WARNING: Failed to generate offline configuration: {e}")
+        print(" Offline mode could NOT be activated. Falling back to original config.")
+        print("!"*60 + "\n")
 
 # 创建 MapProxy WSGI 应用
 application = make_wsgi_app(mapproxy_conf)

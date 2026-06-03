@@ -111,11 +111,11 @@ class MapProxyServer:
             dst = os.path.join(self.work_dir, dst_rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if os.path.exists(src) and not os.path.exists(dst):
-                 try:
-                     shutil.copy2(src, dst)
-                     print(f"已复制默认配置: {dst_rel}")
-                 except:
-                     pass
+                try:
+                    shutil.copy2(src, dst)
+                    print(f"已复制默认配置: {dst_rel}")
+                except:
+                    pass
         
         # 再次尝试导入 utils并配置日志 (如果之前失败)
         global utils
