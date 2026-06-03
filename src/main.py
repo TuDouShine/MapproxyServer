@@ -1,5 +1,8 @@
 import os
 import sys
+# 确保可以导入 src.core
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import subprocess
 import platform
 import shutil
@@ -21,7 +24,10 @@ utils = None
 
 class MapProxyServer:
     def __init__(self, work_dir=None):
-        self.project_root = os.path.dirname(os.path.abspath(__file__))
+        # 源码目录 src/
+        self.src_dir = os.path.dirname(os.path.abspath(__file__))
+        # 项目根目录
+        self.project_root = os.path.dirname(self.src_dir)
         if getattr(sys, 'frozen', False):
             # 打包环境下，project_root 是临时解压目录
             pass
@@ -34,7 +40,7 @@ class MapProxyServer:
             exe_dir = os.path.dirname(sys.executable)
             self.work_dir = os.path.join(exe_dir, "MapProxyLauncher")
         else:
-            # 源码模式：默认在当前目录
+            # 源码模式：默认在当前目录的上一级 (项目根目录)
             self.work_dir = self.project_root
 
         # 路径定义
@@ -92,13 +98,22 @@ class MapProxyServer:
         
         # 确保 config.py, mapproxy.yaml 等在工作目录
         # (如果在 GUI 模式下已经 deploy 过，这里是双重保险；如果直接运行 main.py，这里是必须的)
-        for filename in ["mapproxy.yaml", "mapproxy-seed.yaml", "config.py", "seed_manager.py", "utils.py"]:
-            src = os.path.join(self.project_root, filename)
-            dst = os.path.join(self.work_dir, filename)
+        items_to_copy = [
+            ("src/core/config.py", "src/core/config.py"),
+            ("src/core/seed_manager.py", "src/core/seed_manager.py"),
+            ("src/core/utils.py", "src/core/utils.py"),
+            ("configs/mapproxy.yaml", "configs/mapproxy.yaml"),
+            ("configs/mapproxy-seed.yaml", "configs/mapproxy-seed.yaml"),
+        ]
+        
+        for src_rel, dst_rel in items_to_copy:
+            src = os.path.join(self.project_root, src_rel)
+            dst = os.path.join(self.work_dir, dst_rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
             if os.path.exists(src) and not os.path.exists(dst):
                  try:
                      shutil.copy2(src, dst)
-                     print(f"已复制默认配置: {filename}")
+                     print(f"已复制默认配置: {dst_rel}")
                  except:
                      pass
         
@@ -110,17 +125,17 @@ class MapProxyServer:
                 sys.path.insert(0, self.work_dir)
                 
             try:
-                import utils
+                from src.core import utils
                 utils.setup_logging(self.logs_dir)
                 print("Utils module loaded and logging configured.")
             except ImportError as e:
                 # 尝试从当前目录导入 (如果是在 dist 目录下运行)
                 try:
                     import importlib.util
-                    spec = importlib.util.spec_from_file_location("utils", os.path.join(self.work_dir, "utils.py"))
+                    spec = importlib.util.spec_from_file_location("utils", os.path.join(self.work_dir, "src", "core", "utils.py"))
                     if spec and spec.loader:
                         utils = importlib.util.module_from_spec(spec)
-                        sys.modules["utils"] = utils
+                        sys.modules["src.core.utils"] = utils
                         spec.loader.exec_module(utils)
                         utils.setup_logging(self.logs_dir)
                         print("Utils module loaded from work_dir.")
@@ -273,27 +288,37 @@ class MapProxyServer:
             self.print_error(f"安装依赖失败: {e}")
             sys.exit(1)
 
-    def start_service(self, port=8080):
+    def start_service(self, port=8080, enable_online_cache=False):
         """启动服务"""
         self.print_step("启动 MapProxy 服务")
         
-        # 切换到工作目录，确保 waitress 能找到 config.py 和 mapproxy.yaml
+        # 切换到工作目录，确保 waitress 能找到 src.core.config 和 mapproxy.yaml
         os.chdir(self.work_dir)
-        sys.path.insert(0, self.work_dir) # 确保能 import config
+        sys.path.insert(0, self.work_dir) # 确保能 import src.core.config
+        
+        # 设置离线模式环境变量
+        if not enable_online_cache:
+            os.environ['MAPPROXY_OFFLINE_MODE'] = '1'
+        else:
+            os.environ.pop('MAPPROXY_OFFLINE_MODE', None)
         
         # 集成 Seed Manager
-        try:
-            # 动态导入，因为 seed_manager 已经在 work_dir
-            import seed_manager
-            # 重新加载以防万一
-            import importlib
-            importlib.reload(seed_manager)
-            
-            # 初始化时传入 work_dir 作为 project_root
-            seed_mgr = seed_manager.SeedManager(self.work_dir)
-            seed_mgr.start_background_seed()
-        except Exception as e:
-            print(f"警告: Seed 管理器启动失败: {e}")
+        if enable_online_cache:
+            try:
+                # 动态导入，因为 seed_manager 已经在 work_dir
+                from src.core import seed_manager
+                # 重新加载以防万一
+                import importlib
+                importlib.reload(seed_manager)
+                
+                # 初始化时传入 work_dir 作为 project_root
+                seed_mgr = seed_manager.SeedManager(self.work_dir)
+                seed_mgr.start_background_seed()
+                print("已开启后台在线缓存(mapproxy-seed)。")
+            except Exception as e:
+                print(f"警告: Seed 管理器启动失败: {e}")
+        else:
+            print("未开启后台在线缓存。")
 
         host = '0.0.0.0'
         
@@ -305,9 +330,8 @@ class MapProxyServer:
             print("按 Ctrl+C 停止服务")
             try:
                 from waitress import serve
-                # 导入 config.py 中的 application
-                # 注意：config.py 必须在 sys.path 中 (已通过 sys.path.insert(0, work_dir) 确保)
-                import config
+                # 导入 src.core.config 中的 application
+                from src.core import config
                 serve(config.application, host=host, port=port)
             except ImportError as e:
                 self.print_error(f"无法导入 Waitress 或配置: {e}")
@@ -317,9 +341,9 @@ class MapProxyServer:
             # 普通模式：使用 venv 中的 waitress
             # 检查 Waitress 是否存在
             if not os.path.exists(self.venv_waitress):
-                run_cmd = [self.venv_python, '-m', 'waitress', f'--host={host}', f'--port={port}', 'config:application']
+                run_cmd = [self.venv_python, '-m', 'waitress', f'--host={host}', f'--port={port}', 'src.core.config:application']
             else:
-                run_cmd = [self.venv_waitress, f'--host={host}', f'--port={port}', 'config:application']
+                run_cmd = [self.venv_waitress, f'--host={host}', f'--port={port}', 'src.core.config:application']
 
             print(f"启动命令: {' '.join(run_cmd)}")
             print(f"服务启动中... 请访问 http://localhost:{port}/demo/")
@@ -340,6 +364,7 @@ class MapProxyServer:
         parser.add_argument('--work-dir', type=str, default=None, help='Working directory for data and configs')
         parser.add_argument('--python-path', type=str, default=None, help='Path to Python interpreter to use')
         parser.add_argument('--skip-venv', action='store_true', help='Skip virtual environment creation')
+        parser.add_argument('--enable-online-cache', action='store_true', help='Enable background online caching (mapproxy-seed)')
         args, unknown = parser.parse_known_args()
 
         print("MapProxy 服务发布程序启动...")
@@ -355,7 +380,7 @@ class MapProxyServer:
         if self.is_frozen:
             # Frozen 模式：跳过环境配置，直接启动
             print("运行于独立打包环境。")
-            self.start_service(port=args.port)
+            self.start_service(port=args.port, enable_online_cache=args.enable_online_cache)
         else:
             # 普通模式：检查 venv
             # 如果是 GUI 调用并通过外部 Python 运行，通常也希望自动化
@@ -383,7 +408,7 @@ class MapProxyServer:
                 # 简单假设 waitress 也在同一路径下 (或者在 PATH)
                 self.venv_waitress = "waitress-serve" 
                  
-            self.start_service(port=args.port)
+            self.start_service(port=args.port, enable_online_cache=args.enable_online_cache)
 
 if __name__ == "__main__":
     server = MapProxyServer()

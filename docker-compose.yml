@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  mapproxy:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./cache_data:/app/cache_data
+      - ./logs:/app/logs
+      - ./configs/mapproxy.yaml:/app/configs/mapproxy.yaml
+      - ./configs/mapproxy-seed.yaml:/app/configs/mapproxy-seed.yaml
+    restart: unless-stopped

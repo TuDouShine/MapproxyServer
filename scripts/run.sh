@@ -15,7 +15,7 @@ get_script_dir() {
   echo "$( cd -P "$( dirname "$source" )" && pwd )"
 }
 
-WORK_DIR="$(get_script_dir)"
+WORK_DIR="$(dirname "$(get_script_dir)")"
 PORT="${1:-8080}"
 
 # Navigate to work directory
@@ -100,4 +100,4 @@ log_info "Work Dir: $WORK_DIR"
 log_info "Port: $PORT"
 
 # Pass the explicitly resolved python path to main.py to ensure consistency
-exec "$PYTHON_EXEC" main.py --service --port "$PORT" --work-dir "$WORK_DIR" --python-path "$PYTHON_EXEC"
+exec "$PYTHON_EXEC" src/main.py --service --port "$PORT" --work-dir "$WORK_DIR" --python-path "$PYTHON_EXEC"

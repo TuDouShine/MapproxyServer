@@ -31,7 +31,7 @@
 ### 2.1 运行方式
 
 #### 方式一：GUI 启动器 (推荐)
-直接运行根目录下的 **`MapProxyLauncher.exe`** (如果是源码运行则为 `python gui_launcher.py`)。
+直接运行根目录下的 **`MapProxyLauncher.exe`** (如果是源码运行则为 `python src/gui_launcher.py`)。
 
 1.  **Python 环境设置**：程序会自动扫描系统的 Python 解释器，在下拉列表中选择一个可用的 Python 版本（推荐 3.8+）。
 2.  **服务设置**：输入服务端口（默认为 7001）。
@@ -42,10 +42,10 @@
 5.  **访问地图**：点击“浏览器打开”按钮即可访问服务演示页面。
 
 #### 方式二：命令行 (高级)
-如果你偏好命令行或需要调试，可以直接运行 `main.py`：
+如果你偏好命令行或需要调试，可以直接运行 `src/main.py`：
 
 ```powershell
-python main.py
+python src/main.py
 ```
 
 ### 2.2 离线部署（迁移至内网）
@@ -68,18 +68,18 @@ python main.py
     ```
 2.  **启动服务**：
     ```bash
-    chmod +x run.sh
-    ./run.sh 8080
+    chmod +x scripts/run.sh
+    ./scripts/run.sh 8080
     ```
     脚本会自动检测 Python 环境、创建虚拟环境（venv）、安装 `requirements.txt` 中的依赖，并启动服务。
 
 #### 方式二：Systemd 系统服务 (推荐)
 适合生产环境，支持开机自启和后台运行。
 
-1.  修改 `mapproxy.service` 文件中的路径配置（默认为 `/opt/MapproxyServer`）。
+1.  修改 `scripts/mapproxy.service` 文件中的路径配置（默认为 `/opt/MapproxyServer`）。
 2.  安装并启动服务：
     ```bash
-    sudo cp mapproxy.service /etc/systemd/system/
+    sudo cp scripts/mapproxy.service /etc/systemd/system/
     sudo systemctl daemon-reload
     sudo systemctl enable mapproxy
     sudo systemctl start mapproxy
@@ -103,8 +103,9 @@ python main.py
     进入项目根目录，执行以下命令将所有依赖下载到 `packages` 目录：
     直接运行启动脚本。程序会自动下载检测 `packages` 目录下的依赖包并完成虚拟环境的构建与依赖安装。
     ```bash
-    chmod +x run.sh
-    ./run.sh 8080
+    chmod +x scripts/run.sh
+    ./scripts/run.sh 8080
+    ```
 
 3.  **打包项目**：
     确认 `packages` 目录已包含所有 `.whl` 或 `.tar.gz` 文件后，将整个项目目录打包：
@@ -140,8 +141,8 @@ python main.py
 4.  **启动服务**：
     直接运行启动脚本。程序会自动检测 `packages` 目录下的离线包并完成虚拟环境的构建与依赖安装，全程无需联网。
     ```bash
-    chmod +x run.sh
-    ./run.sh 8080
+    chmod +x scripts/run.sh
+    ./scripts/run.sh 8080
     ```
 
 5.  **验证部署**：
@@ -160,6 +161,46 @@ python main.py
 *   **Q: 提示 `ModuleNotFoundError: No module named 'venv'`？**
     *   **原因**：部分 Linux 发行版（如 Ubuntu）默认精简了 venv 模块。
     *   **解决**：需联系运维人员安装 `python3-venv`，（目前已自动检测处理，根据提示操作安装即可）
+
+### 2.5 Docker 部署指南
+
+本项目支持使用 Docker 进行容器化部署，这是一种轻量、隔离且易于迁移的部署方式。项目根目录已包含相应的 `Dockerfile` 和 `docker-compose.yml`。
+
+#### 方式一：使用 Docker 命令行
+
+1. **构建镜像**：
+   在项目根目录下，执行以下命令构建 Docker 镜像：
+   ```bash
+   docker build -t mapproxy-server .
+   ```
+
+2. **运行容器**：
+   使用 `docker run` 启动服务。建议将容器内部端口映射到宿主机，并挂载数据卷以实现配置、缓存和日志的持久化：
+   ```bash
+   docker run -d \
+     --name mapproxy \
+     -p 8080:8080 \
+     -v $(pwd)/cache_data:/app/cache_data \
+     -v $(pwd)/logs:/app/logs \
+     -v $(pwd)/configs/mapproxy.yaml:/app/configs/mapproxy.yaml \
+     -v $(pwd)/configs/mapproxy-seed.yaml:/app/configs/mapproxy-seed.yaml \
+     mapproxy-server
+   ```
+   *说明：`-p 8080:8080` 用于端口映射（宿主机端口:容器内端口）；`-v` 用于挂载本地的缓存目录、日志目录以及配置文件到容器内，确保数据持久化。*
+
+#### 方式二：使用 Docker Compose (推荐)
+
+推荐使用 Docker Compose 进行快速部署，它能自动处理数据卷挂载和端口映射。
+
+1. **启动服务**：
+   在项目根目录执行以下命令，即可在后台一键构建并启动服务：
+   ```bash
+   docker-compose up -d
+   ```
+
+2. **管理服务**：
+   *   **查看运行日志**：`docker-compose logs -f`
+   *   **停止并移除容器**：`docker-compose down`
 
 ---
 
@@ -180,16 +221,16 @@ python main.py
 
 ### 3.2 配置文件说明
 
-项目根目录下已包含 `build.spec` 配置文件，用于定义打包规则。该文件已针对 MapProxy 的特殊结构进行了预配置。
+`scripts/` 目录下已包含 `build.spec` 配置文件，用于定义打包规则。该文件已针对 MapProxy 的特殊结构进行了预配置。
 
-**关键配置解析 (`build.spec`)**:
+**关键配置解析 (`scripts/build.spec`)**:
 
 ```python
 # 数据文件 (datas): 将非代码资源打包进 exe
 datas = [
-    ('main.py', '.'),              # 核心服务逻辑
-    ('mapproxy.yaml', '.'),        # 默认配置
-    ('requirements.txt', '.'),     # 依赖列表
+    (os.path.join(PROJECT_ROOT, 'src/main.py'), 'src'),
+    (os.path.join(PROJECT_ROOT, 'configs/mapproxy.yaml'), 'configs'),
+    (os.path.join(PROJECT_ROOT, 'requirements.txt'), '.'),
     # ... MapProxy 内部模板和配置
     (os.path.join(mapproxy_path, 'config', 'config-schema.json'), 'mapproxy/config'),
 ]
@@ -208,7 +249,7 @@ hiddenimports = [
  
  #### 方式一：使用自动化构建脚本 (推荐)
  
- 我们提供了一个跨平台的构建脚本 `build.py`，它会自动检测当前系统并在 `dist/` 目录下生成对应的可执行文件。
+ 我们提供了一个跨平台的构建脚本 `scripts/build.py`，它会自动检测当前系统并在 `dist/` 目录下生成对应的可执行文件。
  
  1.  **准备环境**: 确保已安装 PyInstaller。
      ```bash
@@ -216,7 +257,7 @@ hiddenimports = [
      ```
  2.  **运行构建**:
      ```bash
-     python build.py
+     python scripts/build.py
      ```
  3.  **获取产物**:
      *   **Windows**: 生成 `dist/MapProxyLauncher.exe`
@@ -228,23 +269,23 @@ hiddenimports = [
  
  **Windows 构建**:
  ```bash
- pyinstaller build.spec
+ pyinstaller scripts/build.spec
  ```
  
  **Linux 构建**:
  在 Linux 环境下（无法在 Windows 上交叉编译 Linux 程序），执行相同的命令：
  ```bash
- pyinstaller build.spec
+ pyinstaller scripts/build.spec
  ```
  
- *注：`build.spec` 已配置为根据运行平台自动调整参数（如文件后缀、路径分隔符等）。*
+ *注：`scripts/build.spec` 已配置为根据运行平台自动调整参数（如文件后缀、路径分隔符等）。*
  
  ### 3.4 依赖处理与资源打包
 
 由于 MapProxy 包含大量非 Python 资源（如模板、配置 schema），我们采用了以下策略确保其在打包后可用：
 
-1.  **静态资源嵌入**: 在 `build.spec` 的 `datas` 列表中，显式指定了 `mapproxy.yaml`, `templates` 等文件的包含路径。
-2.  **运行时资源释放**: `gui_launcher.py` 检测到运行在 Frozen (打包) 模式下时，会利用 `sys._MEIPASS` 访问临时目录，并将必要的文件（如 `mapproxy.yaml`, `config.py`）部署到用户的**工作目录** (`MapProxyLauncher/`) 中。
+1.  **静态资源嵌入**: 在 `scripts/build.spec` 的 `datas` 列表中，显式指定了 `configs/mapproxy.yaml`, `templates` 等文件的包含路径。
+2.  **运行时资源释放**: `src/gui_launcher.py` 检测到运行在 Frozen (打包) 模式下时，会利用 `sys._MEIPASS` 访问临时目录，并将必要的文件（如 `mapproxy.yaml`, `config.py`）部署到用户的**工作目录** (`MapProxyLauncher/`) 中。
     *   *机制*: 首次运行时，程序会自动将内嵌的配置文件复制到 exe 同级目录下的 `MapProxyLauncher` 文件夹，确保用户可以修改配置。
 
 ### 3.5 测试与验证
@@ -259,18 +300,18 @@ hiddenimports = [
     *   点击“浏览器打开”，确认地图服务页面能正常加载。
     *   检查“图层信息”面板是否正确显示图层列表。
 4.  **常见问题排查**:
-    *   *错误 "Failed to execute script gui_launcher"*: 通常是因为缺少隐藏导入。尝试在 `build.spec` 的 `hiddenimports` 中添加缺失的模块，然后重新打包。
+    *   *错误 "Failed to execute script gui_launcher"*: 通常是因为缺少隐藏导入。尝试在 `scripts/build.spec` 的 `hiddenimports` 中添加缺失的模块，然后重新打包。
     *   *地图无法加载*: 检查工作目录下的 `mapproxy.yaml` 是否正确生成。
 
 ### 3.6 高级选项
 
-*   **调试模式**: 如果遇到启动报错但看不到日志，可以修改 `build.spec` 中的 `console=False` 为 `console=True`，重新打包后运行，即可看到控制台输出的详细错误信息。
+*   **调试模式**: 如果遇到启动报错但看不到日志，可以修改 `scripts/build.spec` 中的 `console=False` 为 `console=True`，重新打包后运行，即可看到控制台输出的详细错误信息。
 *   **目录模式 (One-Directory)**: 如果希望加快启动速度，可以将打包模式改为目录模式（修改 `EXE` 参数并添加 `COLLECT` 步骤），但这需要分发整个文件夹。
 
 ### 3.7 版本管理与发布
 
 建议在发布新版本时：
-1.  在 `gui_launcher.py` 或 `README.md` 中更新版本号。
+1.  在 `src/gui_launcher.py` 或 `README.md` 中更新版本号。
 2.  运行打包命令生成 exe。
 3.  将 exe 文件重命名为 `MapProxyLauncher_vX.X.X.exe` 进行分发。
 
@@ -300,10 +341,18 @@ hiddenimports = [
 ```text
 MapproxyServer/
 ├── MapProxyLauncher.exe      # [入口] GUI 启动程序（打包版）
-├── gui_launcher.py           # [源码] GUI 启动程序源码
-├── main.py                   # [核心] 服务主逻辑，负责环境构建与服务启动
-├── config.py                 # [配置] Waitress 服务器启动脚本
-├── mapproxy.yaml             # [配置] MapProxy 核心配置文件（图层、源、缓存规则）
+├── src/                      # [源码] 源代码目录
+│   ├── gui_launcher.py       # [源码] GUI 启动程序源码
+│   ├── main.py               # [核心] 服务主逻辑，负责环境构建与服务启动
+│   └── core/                 # [核心] 核心逻辑（环境检测、进程管理等）
+├── configs/                  # [配置] 配置文件目录
+│   ├── mapproxy.yaml         # [配置] MapProxy 核心配置文件（图层、源、缓存规则）
+│   └── mapproxy-seed.yaml    # [配置] MapProxy 预生成缓存配置文件
+├── scripts/                  # [脚本] 辅助脚本目录
+│   ├── run.sh                # [脚本] Linux 启动脚本
+│   ├── build.py              # [脚本] 自动化构建脚本
+│   ├── build.spec            # [脚本] PyInstaller 打包配置
+│   └── mapproxy.service      # [脚本] Systemd 服务配置
 ├── requirements.txt          # [配置] 项目依赖列表
 ├── venv/                     # [自动生成] Python 虚拟环境目录
 ├── packages/                 # [自动生成] 离线依赖包存放目录
@@ -322,10 +371,10 @@ MapproxyServer/
 A: 请尝试以管理员身份运行程序，或检查端口是否被其他程序占用。
 
 **Q: 为什么图层列表是空的？**
-A: 请检查 `mapproxy.yaml` 文件是否配置正确，且位于正确的位置（源码模式在根目录，GUI 模式在 `MapProxyLauncher` 目录下）。
+A: 请检查 `configs/mapproxy.yaml` 文件是否配置正确，且位于正确的位置（源码模式在 `configs/` 目录，GUI 模式在 `MapProxyLauncher` 目录下）。
 
 **Q: 如何修改地图源？**
-A: 编辑 `mapproxy.yaml` 文件，修改 `sources` 和 `layers` 部分。修改后重启服务即可生效。
+A: 编辑 `configs/mapproxy.yaml` 文件，修改 `sources` 和 `layers` 部分。修改后重启服务即可生效。
 
 **Q: 如何清理缓存和重置环境？**
 A: 直接删除 `cache_data/` 目录下的所有文件即可。MapProxy 会在下次访问时自动重新生成。

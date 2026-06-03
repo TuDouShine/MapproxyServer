@@ -22,14 +22,19 @@ wheels/
 *.egg
 
 # Virtual Environment
+.venv/
 venv/
 ENV/
+env/
 
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
 
 # Unit test / coverage reports
+tests/
+test_*.py
+*_test.py
 htmlcov/
 .tox/
 .nox/

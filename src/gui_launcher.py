@@ -2,6 +2,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import sys
 import os
+# 确保可以导入 src.core
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import json
 import subprocess
 import threading
@@ -12,14 +15,13 @@ import webbrowser
 import yaml
 import time
 try:
-    import process_manager
+    from src.core import process_manager
 except ImportError:
     process_manager = None
 try:
-    from seed_manager import SeedManager
+    from src.core.seed_manager import SeedManager
 except ImportError:
     SeedManager = None
-from python_detector import find_python_interpreters
 
 # 工作目录名称
 LAUNCHER_DIR_NAME = "MapProxyLauncher"
@@ -49,43 +51,41 @@ def deploy_resources():
     if getattr(sys, 'frozen', False):
         source_dir = sys._MEIPASS
     else:
-        source_dir = os.path.dirname(os.path.abspath(__file__))
+        # 获取项目根目录 (由于 gui_launcher.py 在 src/ 下)
+        source_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
-    # 需要复制的文件列表
-    files_to_copy = [
-        "main.py",
-        "config.py",
-        "seed_manager.py",
-        "utils.py",
-        "mapproxy.yaml",
-        "mapproxy-seed.yaml",
-        "requirements.txt"
+    # 需要复制的目录和文件映射 (src -> dst_relative)
+    items_to_copy = [
+        ("src/main.py", "src/main.py"),
+        ("src/core/config.py", "src/core/config.py"),
+        ("src/core/seed_manager.py", "src/core/seed_manager.py"),
+        ("src/core/utils.py", "src/core/utils.py"),
+        ("configs/mapproxy.yaml", "configs/mapproxy.yaml"),
+        ("configs/mapproxy-seed.yaml", "configs/mapproxy-seed.yaml"),
+        ("requirements.txt", "requirements.txt")
     ]
     
-    for filename in files_to_copy:
-        src = os.path.join(source_dir, filename)
-        dst = os.path.join(work_dir, filename)
+    for src_rel, dst_rel in items_to_copy:
+        src = os.path.join(source_dir, src_rel)
+        dst = os.path.join(work_dir, dst_rel)
         
-        # 如果源文件存在且目标文件不存在（或者强制覆盖逻辑），则复制
-        # 这里为了简单，且为了支持升级，如果源文件存在，我们检查目标是否存在
-        # 配置文件如果用户改过，最好不要覆盖。但是代码文件必须覆盖。
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
         
         if os.path.exists(src):
-            if filename.endswith(".yaml") or filename.endswith(".json") or filename == "requirements.txt":
+            if dst_rel.endswith(".yaml") or dst_rel.endswith(".json") or dst_rel == "requirements.txt":
                 # 配置文件/数据文件：仅当不存在时复制，以免覆盖用户配置
                 if not os.path.exists(dst):
                     try:
                         shutil.copy2(src, dst)
-                        print(f"Deploying config: {filename}")
+                        print(f"Deploying config: {dst_rel}")
                     except Exception as e:
-                        print(f"Failed to deploy {filename}: {e}")
+                        print(f"Failed to deploy {dst_rel}: {e}")
             else:
                 # 代码文件：始终覆盖，确保版本更新
                 try:
                     shutil.copy2(src, dst)
-                    # print(f"Deploying code: {filename}")
                 except Exception as e:
-                    print(f"Failed to deploy {filename}: {e}")
+                    print(f"Failed to deploy {dst_rel}: {e}")
 
 class LauncherApp:
     def __init__(self, root):
@@ -97,6 +97,7 @@ class LauncherApp:
         self.python_path_var = tk.StringVar()
         self.port_var = tk.StringVar(value="8080")
         self.allow_external_var = tk.BooleanVar(value=False)
+        self.enable_online_cache_var = tk.BooleanVar(value=False)
         self.service_process = None
         self.log_queue = queue.Queue()
         
@@ -135,26 +136,20 @@ class LauncherApp:
         self.text_log.config(state="disabled")
 
     def scan_pythons(self):
-        self.log("正在扫描 Python 解释器...")
-        interpreters = find_python_interpreters()
+        self.log("初始化 Python 环境配置...")
         
-        # 如果是 Frozen 环境，添加内置 Python 选项
-        if getattr(sys, 'frozen', False):
-            # 添加一个特殊的标识，或者直接用 sys.executable (但标记为 Internal)
-            internal_entry = {'path': sys.executable, 'version': 'Internal (Bundled)', 'source': 'Internal'}
-            interpreters.insert(0, internal_entry)
-            
-        values = [f"{i['version']} - {i['path']}" for i in interpreters]
-        self.combo_python['values'] = values
+        # 设置固定的内置/当前 Python 路径，跳过扫描
+        internal_path = sys.executable
+        internal_version = 'Internal (Bundled)' if getattr(sys, 'frozen', False) else 'Current Environment'
         
-        # 尝试恢复之前的选择，或者默认选中第一个
-        current = self.python_path_var.get()
-        if current and current in values:
-            self.combo_python.current(values.index(current))
-        elif values:
-            self.combo_python.current(0)
+        label = f"{internal_version} - {internal_path}"
+        
+        self.combo_python.config(state="normal")
+        self.combo_python['values'] = [label]
+        self.combo_python.current(0)
+        self.combo_python.config(state="disabled")
             
-        self.log(f"扫描完成，找到 {len(interpreters)} 个解释器。")
+        self.log(f"已设定 Python 环境: {label}")
 
     def validate_port_input(self, event=None):
         try:
@@ -197,7 +192,8 @@ class LauncherApp:
         config = {
             "python_path": python_path,
             "port": int(self.port_var.get()),
-            "selection_label": selection # 保存完整标签以便回显
+            "selection_label": selection, # 保存完整标签以便回显
+            "enable_online_cache": self.enable_online_cache_var.get()
         }
         
         try:
@@ -214,16 +210,10 @@ class LauncherApp:
             try:
                 with open(config_file, 'r') as f:
                     config = json.load(f)
-                    path = config.get("python_path", "")
                     port = config.get("port", 8080)
-                    selection_label = config.get("selection_label", "")
-                    
                     self.port_var.set(str(port))
-                    
-                    if selection_label:
-                        self.python_path_var.set(selection_label)
-                    elif path:
-                         self.python_path_var.set(path)
+                    enable_online_cache = config.get("enable_online_cache", False)
+                    self.enable_online_cache_var.set(enable_online_cache)
             except Exception:
                 pass
 
@@ -246,7 +236,7 @@ class LauncherApp:
             python_path = selection
             
         work_dir = get_work_dir()
-        script_path = os.path.join(work_dir, "main.py")
+        script_path = os.path.join(work_dir, "src", "main.py")
         
         # 构造命令
         cmd = []
@@ -272,6 +262,9 @@ class LauncherApp:
         # Host Logic
         host = '0.0.0.0' if self.allow_external_var.get() else '127.0.0.1'
         cmd.extend(['--port', str(port), '--work-dir', work_dir, '--host', host])
+        
+        if self.enable_online_cache_var.get():
+            cmd.append('--enable-online-cache')
         
         self.log(f"正在启动服务: {' '.join(cmd)}")
         self.set_status("正在初始化环境配置...", "orange") # 状态更新
@@ -500,7 +493,7 @@ class LauncherApp:
 
     def get_layer_info(self):
         """解析 mapproxy.yaml 获取图层信息"""
-        config_file = os.path.join(get_work_dir(), "mapproxy.yaml")
+        config_file = os.path.join(get_work_dir(), "configs", "mapproxy.yaml")
         layers_info = []
         
         if not os.path.exists(config_file):
@@ -623,7 +616,7 @@ class LauncherApp:
         frame_py.pack(fill="x", padx=10, pady=5)
         
         ttk.Label(frame_py, text="Python 版本:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.combo_python = ttk.Combobox(frame_py, textvariable=self.python_path_var, width=60, state="readonly")
+        self.combo_python = ttk.Combobox(frame_py, textvariable=self.python_path_var, width=60, state="disabled")
         self.combo_python.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         
         # 绑定事件以清除选中高亮，作为双重保险
@@ -638,8 +631,6 @@ class LauncherApp:
         self.combo_python.bind("<<ComboboxSelected>>", clear_selection)
         # 注意：FocusIn 事件如果也移除焦点，会导致无法再次点击选择，所以这里只在选中后移除
         # self.combo_python.bind("<FocusIn>", clear_selection)
-        
-        ttk.Button(frame_py, text="刷新列表", command=self.scan_pythons).grid(row=0, column=2, padx=5, pady=5)
 
         # 2. 端口设置区域
         frame_port = ttk.LabelFrame(self.root, text="服务设置", padding=10)
@@ -653,6 +644,9 @@ class LauncherApp:
         
         # 外部访问
         ttk.Checkbutton(frame_port, text="允许外部访问 (0.0.0.0)", variable=self.allow_external_var).grid(row=0, column=3, padx=10, pady=5, sticky="w")
+        
+        # 在线缓存
+        ttk.Checkbutton(frame_port, text="在线缓存", variable=self.enable_online_cache_var).grid(row=0, column=4, padx=10, pady=5, sticky="w")
 
         # 3. 图层信息区域 (新增)
         self.create_layer_info_widgets()
@@ -731,7 +725,7 @@ if __name__ == "__main__":
         # 如果是打包环境，main 模块应该可以直接导入（因为它被打包了）
         # 如果是脚本环境，main.py 就在旁边
         try:
-            from main import MapProxyServer
+            from src.main import MapProxyServer
             server = MapProxyServer()
             server.run()
         except Exception as e:

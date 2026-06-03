@@ -70,7 +70,7 @@ def find_python_interpreters():
                             interpreters.append({'path': exe_path, 'version': version, 'source': 'System'})
 
     # 4. 当前项目虚拟环境
-    project_root = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     venv_patterns = ['venv', '.venv', 'env']
     for venv_name in venv_patterns:
         if os.name == 'nt':

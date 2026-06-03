@@ -62,8 +62,8 @@ class SeedManager:
     def __init__(self, project_root, config=None):
         self.project_root = project_root
         self.config = config or {}
-        self.mapproxy_conf = os.path.join(project_root, 'mapproxy.yaml')
-        self.seed_conf = os.path.join(project_root, 'mapproxy-seed.yaml')
+        self.mapproxy_conf = os.path.join(project_root, 'configs', 'mapproxy.yaml')
+        self.seed_conf = os.path.join(project_root, 'configs', 'mapproxy-seed.yaml')
         self.status_file = os.path.join(project_root, 'seed_status.json')
         
         self.max_concurrency = self.config.get('concurrency', 2)

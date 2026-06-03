@@ -20,7 +20,7 @@ caches:
     meta_buffer: 128      # 防止边缘裁剪问题
     cache:
       type: file
-      directory: ./cache_data/arcgis_satellite
+      directory: ../cache_data/arcgis_satellite
 
 sources:
   arcgis_satellite_source:
@@ -34,7 +34,7 @@ grids:
 
 globals:
   cache:
-    base_dir: ./cache_data
-    lock_dir: ./cache_data/locks
+    base_dir: ../cache_data
+    lock_dir: ../cache_data/locks
   image:
     resampling_method: bicubic

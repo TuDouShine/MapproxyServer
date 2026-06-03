@@ -4,6 +4,9 @@ import site
 import sys
 import platform
 
+# 获取项目根目录
+PROJECT_ROOT = os.path.abspath(os.path.join(SPECPATH, '..'))
+
 # 获取 site-packages 路径
 # 这里我们假设是在 venv 环境下运行 PyInstaller
 # 获取 mapproxy 的安装路径
@@ -14,15 +17,15 @@ block_cipher = None
 
 # 需要打包的所有数据文件
 datas = [
-    ('main.py', '.'),
-    ('python_detector.py', '.'),
-    ('config.py', '.'),
-    ('seed_manager.py', '.'),
-    ('process_manager.py', '.'),
-    ('utils.py', '.'),
-    ('mapproxy.yaml', '.'),
-    ('mapproxy-seed.yaml', '.'),
-    ('requirements.txt', '.'),
+    (os.path.join(PROJECT_ROOT, 'src/main.py'), 'src'),
+    (os.path.join(PROJECT_ROOT, 'src/core/python_detector.py'), 'src/core'),
+    (os.path.join(PROJECT_ROOT, 'src/core/config.py'), 'src/core'),
+    (os.path.join(PROJECT_ROOT, 'src/core/seed_manager.py'), 'src/core'),
+    (os.path.join(PROJECT_ROOT, 'src/core/process_manager.py'), 'src/core'),
+    (os.path.join(PROJECT_ROOT, 'src/core/utils.py'), 'src/core'),
+    (os.path.join(PROJECT_ROOT, 'configs/mapproxy.yaml'), 'configs'),
+    (os.path.join(PROJECT_ROOT, 'configs/mapproxy-seed.yaml'), 'configs'),
+    (os.path.join(PROJECT_ROOT, 'requirements.txt'), '.'),
     # 显式包含 MapProxy 的配置文件和模板
     (os.path.join(mapproxy_path, 'config', 'config-schema.json'), os.path.join('mapproxy', 'config')),
     (os.path.join(mapproxy_path, 'service', 'templates'), os.path.join('mapproxy', 'service', 'templates')),
@@ -60,7 +63,7 @@ excludes = [
 ]
 
 a = Analysis(
-    ['gui_launcher.py'],
+    [os.path.join(PROJECT_ROOT, 'src/gui_launcher.py')],
     pathex=[],
     binaries=[],
     datas=datas,
